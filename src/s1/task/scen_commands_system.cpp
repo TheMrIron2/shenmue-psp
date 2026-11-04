@@ -220,11 +220,13 @@ void Script_AllocSpline(ScenarioContext *, void *rawParams) {
 void Script_SetTaskExecutionSuspended(ScenarioContext *context, void *rawParams) {
     const auto *const params = static_cast<const std::uint32_t *>(rawParams);
     ScenarioStack *const stack = params[0] ? ScenarioPointer<ScenarioStack>(params[0]) : context->stack;
-    auto &status = *reinterpret_cast<std::uint16_t *>(reinterpret_cast<std::byte *>(stack) + 0x2a);
+    if (!stack)
+        return;
+    auto &status = stack->status;
     if (params[1])
-        status |= 2U;
+        status |= kScenarioContextSuspended;
     else
-        status &= static_cast<std::uint16_t>(~2U);
+        status &= static_cast<std::uint16_t>(~kScenarioContextSuspended);
 }
 
 void Script_shenRequestGameModuleTransition(ScenarioContext *, void *rawParams) {
@@ -270,19 +272,17 @@ void Script_srchControl(ScenarioContext *context, void *rawParams) {
     const std::uint32_t offset = *static_cast<const std::uint32_t *>(rawParams);
     ScenarioStack *const requested = offset ? reinterpret_cast<ScenarioStack *>(g_pCurrentTaskData + static_cast<std::int32_t>(offset)) : context->stack;
     ScenarioStack *current = context->task->stacks;
-    while (current && current != requested) {
-        std::memcpy(&current, reinterpret_cast<const std::byte *>(current) + 0x20, sizeof(current));
-    }
+    while (current && current != requested)
+        current = current->nextStack;
     if (!current) {
         context->stack->accumulator = 0;
         return;
     }
-    auto *const status = reinterpret_cast<std::uint16_t *>(reinterpret_cast<std::byte *>(current) + 0x2a);
-    if ((*status & 1U) != 0) {
+    if ((current->status & kScenarioContextFinished) != 0) {
         context->stack->accumulator = 0;
         return;
     }
-    *status |= 1U;
+    current->status |= kScenarioContextFinished;
     context->stack->accumulator = 1;
 }
 

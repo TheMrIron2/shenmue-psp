@@ -4,6 +4,10 @@
 #include <atomic>
 #include <cstring>
 #include <new>
+#if defined(SHENMUE_HOST_PSP)
+#include "s1/hlib.hpp"
+#include "psp/boot_log.hpp"
+#endif
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -61,6 +65,9 @@ constexpr std::uint32_t kBufferOccupied = 0x80000000U;
 struct BufferStorage {
     std::array<BufferResource, kBufferCount> buffers{};
     std::array<std::uint32_t, kBufferCount> tags{};
+#if defined(SHENMUE_HOST_PSP)
+    std::array<bool, kBufferCount> hlibOwned{};
+#endif
     std::uint32_t last = 0;
 };
 
@@ -149,6 +156,11 @@ void ReleaseBufferResources(BufferResource &slot) {
     slot.gpuBuffer = nullptr;
 #endif
     if (slot.rawData) {
+#if defined(SHENMUE_HOST_PSP)
+        if (g_buffers.hlibOwned[&slot - g_buffers.buffers.data()])
+            s1::HLib_FreeTaskData(static_cast<s1::HLib::TaskData *>(slot.rawData), SHEN_NAME(VBUF));
+        else
+#endif
         FreeRawBuffer(slot.rawData);
 #if defined(SHENMUE_HOST_PSP)
         slot.rawData = reinterpret_cast<void *>(static_cast<std::uintptr_t>(0xfefefefdU));
@@ -251,7 +263,23 @@ std::int32_t CreateBuffer(const BufferDescription *description) {
     slot.rawData = nullptr;
 
     if (description->flags3 & 1) {
+#if defined(SHENMUE_HOST_PSP)
+        // Scene vertices live with HLib's model allocations, outside the small C++ heap.
+        slot.rawData = description->flags == 1 ?
+            s1::HLib_AllocHeapMemBlock(description->size, SHEN_NAME(VBUF)) : nullptr;
+        g_buffers.hlibOwned[index] = slot.rawData != nullptr;
+        if (!slot.rawData)
+            slot.rawData = AllocateRawBuffer(static_cast<std::size_t>(description->size));
+        if (!slot.rawData)
+            psp::BootLog("buffer: allocation failed kind=%d bytes=%d", description->flags, description->size);
+#else
         slot.rawData = AllocateRawBuffer(static_cast<std::size_t>(description->size));
+#endif
+        if (!slot.rawData) {
+            slot.referenceCount.store(0, std::memory_order_release);
+            g_buffers.tags[index] &= ~kBufferOccupied;
+            return 0;
+        }
         if (slot.rawData && description->buffer) {
             std::memcpy(slot.rawData, description->buffer, static_cast<std::size_t>(description->size));
         }

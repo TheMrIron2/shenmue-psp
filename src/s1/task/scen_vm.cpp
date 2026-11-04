@@ -3,11 +3,11 @@
 namespace shenmue::s1::scen_detail {
 
 ScenarioStack *&NextStack(ScenarioStack &stack) {
-    return *reinterpret_cast<ScenarioStack **>(stack.frame + 4);
+    return stack.nextStack;
 }
 
 std::uint16_t &StackStatus(ScenarioStack &stack) {
-    return *reinterpret_cast<std::uint16_t *>(reinterpret_cast<std::byte *>(&stack) + 0x2a);
+    return stack.status;
 }
 
 std::uint32_t PointerOffset(const void *pointer) {
@@ -77,6 +77,95 @@ std::uint32_t AsWord(float value) {
 
 namespace shenmue::s1 {
 
+namespace {
+
+std::uint32_t g_scenVmFaultCount = 0;
+
+std::uint32_t ReadModuleWord(const std::byte *module, std::uint32_t offset) {
+    std::uint32_t value = 0;
+    std::memcpy(&value, module + offset, sizeof(value));
+    return value;
+}
+
+void WriteModuleWord(std::byte *module, std::uint32_t offset, std::uint32_t value) {
+    std::memcpy(module + offset, &value, sizeof(value));
+}
+
+bool ScenarioHeaderPassesLayout(const ScenarioHeader &header) {
+    const auto wholeSize = static_cast<std::uint32_t>(header.wholeSize);
+    if (wholeSize < sizeof(ScenarioHeader))
+        return false;
+    const auto within = [wholeSize](std::int32_t offset) {
+        return offset >= static_cast<std::int32_t>(sizeof(ScenarioHeader)) && static_cast<std::uint32_t>(offset) < wholeSize;
+    };
+    if (!within(header.functionOffset) || !within(header.dataSegmentOffset) || !within(header.entrypoint))
+        return false;
+    const auto dataStart = static_cast<std::uint32_t>(header.dataSegmentOffset);
+    const auto dataEnd = static_cast<std::uint32_t>(header.dataEndOffset);
+    const auto reloc = static_cast<std::uint32_t>(header.relocationTableOffset);
+    return dataEnd >= dataStart && dataEnd <= wholeSize && reloc >= dataEnd && reloc <= wholeSize;
+}
+
+} // namespace
+
+std::uint32_t SCEN_GetVmFaultCount() noexcept {
+    return g_scenVmFaultCount;
+}
+
+ScenarioModuleStatus ScenValidateModule(const std::byte *module, std::uint64_t availableSize) {
+    if (!module || availableSize < sizeof(ScenarioHeader))
+        return ScenarioModuleStatus::Truncated;
+    const auto *const header = reinterpret_cast<const ScenarioHeader *>(module);
+    const auto wholeSize = static_cast<std::uint32_t>(header->wholeSize);
+    if (wholeSize < sizeof(ScenarioHeader) || static_cast<std::uint64_t>(wholeSize) > availableSize)
+        return ScenarioModuleStatus::Truncated;
+    if (static_cast<std::uint32_t>(header->token) != SHEN_NAME(SCN3))
+        return ScenarioModuleStatus::BadToken;
+    if ((static_cast<std::uint32_t>(header->flags) & 0x00ff0000U) != 0)
+        return ScenarioModuleStatus::NativeProfile;
+    if (!ScenarioHeaderPassesLayout(*header))
+        return ScenarioModuleStatus::BadLayout;
+
+    const auto dataStart = static_cast<std::uint32_t>(header->dataSegmentOffset);
+    const auto dataEnd = static_cast<std::uint32_t>(header->dataEndOffset);
+    const auto codeStart = static_cast<std::uint32_t>(header->entrypoint);
+    for (std::uint32_t offset = static_cast<std::uint32_t>(header->relocationTableOffset); offset + 8U <= wholeSize; offset += 8U) {
+        const std::uint32_t kind = ReadModuleWord(module, offset);
+        const std::uint32_t site = ReadModuleWord(module, offset + 4U);
+        if (!kind && !site)
+            break;
+        if ((kind != 0x2402U && kind != 0x1402U) || site < dataStart || site > dataEnd - 4U)
+            return ScenarioModuleStatus::BadRelocation;
+        const std::uint32_t target = ReadModuleWord(module, site);
+        if (kind == 0x1402U) {
+            if (target < dataStart || target >= dataEnd)
+                return ScenarioModuleStatus::BadRelocation;
+        } else if (target < codeStart || target >= dataStart) {
+            return ScenarioModuleStatus::BadRelocation;
+        }
+    }
+    return ScenarioModuleStatus::Ok;
+}
+
+bool ScenApplyModuleRelocations(ScenarioHeader *module, std::uint64_t availableSize) {
+    if (!module || ScenValidateModule(reinterpret_cast<const std::byte *>(module), availableSize) != ScenarioModuleStatus::Ok)
+        return false;
+    auto *const bytes = reinterpret_cast<std::byte *>(module);
+    const auto wholeSize = static_cast<std::uint32_t>(module->wholeSize);
+    const std::uint32_t moduleBase = HLib_GetTaskDataOffset(module);
+    for (std::uint32_t offset = static_cast<std::uint32_t>(module->relocationTableOffset); offset + 8U <= wholeSize; offset += 8U) {
+        const std::uint32_t kind = ReadModuleWord(bytes, offset);
+        const std::uint32_t site = ReadModuleWord(bytes, offset + 4U);
+        if (!kind && !site)
+            break;
+        const std::uint32_t target = ReadModuleWord(bytes, site);
+        if (moduleBase > (std::numeric_limits<std::uint32_t>::max)() - target)
+            return false;
+        WriteModuleWord(bytes, site, moduleBase + target);
+    }
+    return true;
+}
+
 ScenarioWindow *ASEQ_SCNW_Init(HLib::Task *scenarioTask) {
     auto *const window = static_cast<ScenarioWindow *>(HLib_AllocHeapMemBlock(sizeof(ScenarioWindow), static_cast<std::int32_t>(SHEN_NAME(SCNW))));
     std::memset(window, 0, sizeof(*window));
@@ -98,51 +187,55 @@ ScenarioWindow *ASEQ_SCNW_Init(HLib::Task *scenarioTask) {
 
 ScenarioStack *scenAllocateScntForScript(
     ScenarioWindow *scenarioWindow, ScenarioStack *parent, const void *entryInstruction, const std::uint32_t *arguments, std::int32_t argumentCount) {
-    constexpr std::int32_t kMaximumArgumentCount = (0x24c - 0x2c) / sizeof(std::uint32_t);
+    constexpr std::int32_t kMaximumArgumentCount = kScenarioSavedWordCount - 2;
     if (!scenarioWindow || !scenarioWindow->info || argumentCount < 0 || argumentCount > kMaximumArgumentCount || (argumentCount != 0 && !arguments)) {
         return nullptr;
     }
-    auto *const allocation = static_cast<std::byte *>(HLib_AllocHeapMemBlock(600, static_cast<std::int32_t>(SHEN_NAME(SCNT))));
-    if (!allocation)
+    auto *const stack = static_cast<ScenarioStack *>(HLib_AllocHeapMemBlock(sizeof(ScenarioStack), static_cast<std::int32_t>(SHEN_NAME(SCNT))));
+    if (!stack)
         return nullptr;
-    std::memset(allocation, 0, 600);
+    std::memset(stack, 0, sizeof(ScenarioStack));
 
-    auto *const stack = reinterpret_cast<ScenarioStack *>(allocation);
     stack->instruction = static_cast<std::byte *>(const_cast<void *>(entryInstruction));
 
-    const std::int32_t workspaceWords = (static_cast<std::uint32_t>(scenarioWindow->info->flags) & 0x00ff0000U) != 0 ? 2438 : 2436;
-    auto *const stackTop = reinterpret_cast<ScenarioRegisters *>(reinterpret_cast<std::byte *>(scenarioWindow) + 4LL * (workspaceWords - argumentCount));
+    const std::uint32_t stackTopOffset =
+        kScenarioVmStackTopOffset + ((static_cast<std::uint32_t>(scenarioWindow->info->flags) & 0x00ff0000U) != 0 ? 8U : 0U);
+    auto *const stackTop = reinterpret_cast<ScenarioRegisters *>(
+        scenarioWindow->workspace + stackTopOffset - 4U * static_cast<std::uint32_t>(argumentCount));
     stack->stackPointer = stackTop;
     stack->framePointer = stackTop;
 
-    auto *output = reinterpret_cast<std::uint32_t *>(allocation + 0x250);
+    // The child's arguments become the low words of its initial operand stack.
+    std::uint32_t *output = stack->savedWords + (kScenarioSavedWordCount - 1);
     if (argumentCount != 0) {
         const std::uint32_t *input = arguments + argumentCount;
         for (std::int32_t index = 0; index < argumentCount; ++index)
             *output-- = *--input;
     }
-    *reinterpret_cast<std::uint32_t *>(allocation + 0x250 - 4LL * argumentCount) = 0;
-    *reinterpret_cast<std::uint32_t *>(allocation + 0x24c - 4LL * argumentCount) = 0;
+    stack->savedWords[kScenarioSavedWordCount - 1 - argumentCount] = 0;
+    stack->savedWords[kScenarioSavedWordCount - 2 - argumentCount] = 0;
     stack->accumulator = 0;
-    *reinterpret_cast<std::uint32_t *>(reinterpret_cast<std::byte *>(stack) + 0x28) = 0;
+    stack->asyncFunctionIndex = 0;
 
     ScenarioStack **link = nullptr;
     if (parent) {
-        link = &NextStack(*parent);
+        link = &parent->nextStack;
     } else {
         link = &scenarioWindow->stacks;
         while (*link)
-            link = &NextStack(**link);
+            link = &(*link)->nextStack;
     }
-    NextStack(*stack) = *link;
+    stack->nextStack = *link;
     *link = stack;
     return stack;
 }
 
 std::uint32_t SCN_Parse(ScenarioContext *context, ScenarioStack *stack, ScenarioRegisters *controlBase, std::byte *, std::byte *) {
     if (!context || !context->task || !stack || !context->task->activeInfo) {
-        if (stack)
-            StackStatus(*stack) |= 1U;
+        if (stack) {
+            StackStatus(*stack) |= kScenarioContextFinished | kScenarioContextFaulted;
+            ++g_scenVmFaultCount;
+        }
         return 0;
     }
 
@@ -187,7 +280,8 @@ std::uint32_t SCN_Parse(ScenarioContext *context, ScenarioStack *stack, Scenario
     };
     auto fail = [&] {
         save();
-        StackStatus(*stack) |= 1U;
+        StackStatus(*stack) |= kScenarioContextFinished | kScenarioContextFaulted;
+        ++g_scenVmFaultCount;
         return accumulator;
     };
 
@@ -431,7 +525,7 @@ std::uint32_t SCN_Parse(ScenarioContext *context, ScenarioStack *stack, Scenario
             stackPointer = reinterpret_cast<ScenarioRegisters *>(const_cast<std::uint32_t *>(&oldFrame->r2));
             if (framePointer)
                 break;
-            StackStatus(*stack) |= 1U;
+            StackStatus(*stack) |= kScenarioContextFinished;
             save();
             return accumulator;
         }
@@ -516,7 +610,7 @@ std::uint32_t SCN_Parse(ScenarioContext *context, ScenarioStack *stack, Scenario
             break;
         case 12: {
             const std::int32_t argumentCount = stack->previousOperand;
-            constexpr std::int32_t kMaximumParameters = static_cast<std::int32_t>((offsetof(ScenarioStack, previousOperand) - 0x2c) / sizeof(std::uint32_t));
+            constexpr std::int32_t kMaximumParameters = kScenarioAsyncArgumentWords;
             const std::size_t beginSlot = static_cast<std::size_t>(operand) * 2;
             if (operand < 0 || beginSlot >= SCNF_Functions.size() || !SCNF_Functions[beginSlot] || argumentCount < 0 || argumentCount > kMaximumParameters ||
                 !canReadStackWords(static_cast<std::size_t>(argumentCount))) {
@@ -557,49 +651,58 @@ std::uint32_t SCN_Parse(ScenarioContext *context, ScenarioStack *stack, Scenario
     return fail();
 }
 
-std::uint32_t scenParseByPtr(ScenarioContext *context) {
-    if (!context || !context->task || !context->stack)
-        return 0;
-    ScenarioStack *const activeStack = context->stack;
-    const auto activeWordCount = [&]() {
-        const auto stackAddress = reinterpret_cast<std::uintptr_t>(activeStack->stackPointer);
-        const auto windowAddress = reinterpret_cast<std::uintptr_t>(context->task);
-        const auto restoreEnd = windowAddress + 0x2618U;
-        if (stackAddress < windowAddress || stackAddress > restoreEnd) {
-            return -1;
-        }
-        const std::uintptr_t bytes = restoreEnd - stackAddress;
-        if ((bytes & 3U) != 0 || bytes / 4U > 128U)
-            return -1;
-        return static_cast<std::int32_t>(bytes / 4U);
-    };
-
-    std::int32_t wordCount = activeWordCount();
-    if (wordCount < 0) {
-        StackStatus(*activeStack) |= 1U;
-    } else if (wordCount > 0) {
-        std::byte *const savedWords = activeStack->frame + 4 * (128 - wordCount) + 56;
-        std::memcpy(activeStack->stackPointer, savedWords, static_cast<std::size_t>(wordCount) * 4);
-    }
-
-    if ((StackStatus(*activeStack) & 1U) == 0 && context->task->info && (static_cast<std::uint32_t>(context->task->info->flags) & 0x00ff0000U) == 0) {
-        SCN_Parse(context, activeStack, reinterpret_cast<ScenarioRegisters *>(&context->task->activeInfo), reinterpret_cast<std::byte *>(activeStack), nullptr);
-    }
-
-    ScenarioStack **link = &context->task->stacks;
+void scenCollectCompletedStacks(ScenarioWindow *window) {
+    if (!window)
+        return;
+    ScenarioStack **link = &window->stacks;
     while (*link) {
         ScenarioStack *const candidate = *link;
-        if ((StackStatus(*candidate) & 1U) != 0) {
+        if ((StackStatus(*candidate) & kScenarioContextFinished) != 0) {
             *link = NextStack(*candidate);
             HLib_FreeTaskData(reinterpret_cast<HLib::TaskData *>(candidate), 0);
         } else {
             link = &NextStack(*candidate);
         }
     }
+}
+
+std::uint32_t scenParseByPtr(ScenarioContext *context) {
+    if (!context || !context->task || !context->stack)
+        return 0;
+    ScenarioStack *const activeStack = context->stack;
+    const auto activeWordCount = [&]() {
+        const auto stackAddress = reinterpret_cast<std::uintptr_t>(activeStack->stackPointer);
+        const auto workspaceAddress = reinterpret_cast<std::uintptr_t>(context->task->workspace);
+        const auto restoreEnd = workspaceAddress + kScenarioVmStackRestoreEndOffset;
+        if (stackAddress < workspaceAddress || stackAddress > restoreEnd)
+            return -1;
+        const std::uintptr_t bytes = restoreEnd - stackAddress;
+        if ((bytes & 3U) != 0 || bytes / 4U > static_cast<std::uintptr_t>(kScenarioSavedWordCount))
+            return -1;
+        return static_cast<std::int32_t>(bytes / 4U);
+    };
+
+    std::int32_t wordCount = activeWordCount();
+    if (wordCount < 0) {
+        StackStatus(*activeStack) |= kScenarioContextFinished | kScenarioContextFaulted;
+        ++g_scenVmFaultCount;
+    } else if (wordCount > 0) {
+        std::uint32_t *const savedWords = activeStack->savedWords;
+        std::memcpy(activeStack->stackPointer, savedWords + (kScenarioSavedWordCount - wordCount), static_cast<std::size_t>(wordCount) * 4);
+    }
+
+    if ((StackStatus(*activeStack) & kScenarioContextFinished) == 0 && context->task->info &&
+        (static_cast<std::uint32_t>(context->task->info->flags) & 0x00ff0000U) == 0) {
+        SCN_Parse(context, activeStack, reinterpret_cast<ScenarioRegisters *>(&context->task->activeInfo), reinterpret_cast<std::byte *>(activeStack), nullptr);
+    }
+
+    // Completed contexts are reaped by scenCollectCompletedStacks() after the
+    // scheduler has advanced past them; freeing here would invalidate both the
+    // returned accumulator and the caller's traversal link.
     wordCount = activeWordCount();
     if (wordCount > 0) {
-        std::byte *const savedWords = activeStack->frame + 4 * (128 - wordCount) + 56;
-        std::memcpy(savedWords, activeStack->stackPointer, static_cast<std::size_t>(wordCount) * 4);
+        std::uint32_t *const savedWords = activeStack->savedWords;
+        std::memcpy(savedWords + (kScenarioSavedWordCount - wordCount), activeStack->stackPointer, static_cast<std::size_t>(wordCount) * 4);
     }
     return activeStack->accumulator;
 }
@@ -609,10 +712,10 @@ std::uint32_t scenParseByPtr2Frames(ScenarioWindow *scenarioWindow, ScenarioStac
         return 0;
     ScenarioContext context{scenarioWindow, stack};
     stack->accumulator = 0;
-    const auto functionIndex = *reinterpret_cast<const std::uint16_t *>(reinterpret_cast<const std::byte *>(stack) + 0x28);
+    const auto functionIndex = stack->asyncFunctionIndex;
     const std::size_t updateSlot = static_cast<std::size_t>(functionIndex) * 2 + 1;
     if (updateSlot < SCNF_Functions.size() && SCNF_Functions[updateSlot]) {
-        const std::int64_t result = SCNF_Functions[updateSlot](&context, reinterpret_cast<std::byte *>(stack) + 0x2c);
+        const std::int64_t result = SCNF_Functions[updateSlot](&context, stack->asyncArguments);
         if (result != 0x10000)
             return static_cast<std::uint32_t>(result);
     }
@@ -622,12 +725,14 @@ std::uint32_t scenParseByPtr2Frames(ScenarioWindow *scenarioWindow, ScenarioStac
 void scenParseStackRecursively(ScenarioWindow *scenarioWindow) {
     if (!scenarioWindow)
         return;
-    ScenarioStack *stack = scenarioWindow->stacks;
-    while (stack) {
-        if ((StackStatus(*stack) & 3U) == 0)
+    // Traverse without freeing: SCN_Parse can insert children after the current
+    // context, so the successor link must be re-read after each parse. Reaping is
+    // deferred until the whole pass has finished.
+    for (ScenarioStack *stack = scenarioWindow->stacks; stack; stack = NextStack(*stack)) {
+        if ((StackStatus(*stack) & (kScenarioContextFinished | kScenarioContextSuspended)) == 0)
             scenParseByPtr2Frames(scenarioWindow, stack);
-        stack = NextStack(*stack);
     }
+    scenCollectCompletedStacks(scenarioWindow);
 }
 
 ScenarioStack *Startup_EventBase(ScenarioWindow *scenarioWindow, ScenarioHeader *info) {
@@ -654,6 +759,7 @@ ScenarioStack *Startup_EventBase(ScenarioWindow *scenarioWindow, ScenarioHeader 
         return nullptr;
 
     scenParseByPtr2Frames(scenarioWindow, stack);
+    scenCollectCompletedStacks(scenarioWindow);
     for (ScenarioStack *candidate = scenarioWindow->stacks; candidate; candidate = NextStack(*candidate)) {
         if (candidate == stack)
             return stack;

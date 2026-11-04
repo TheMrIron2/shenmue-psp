@@ -10,4 +10,4 @@ Refer to `docs/optimisation.md` and https://themriron2.github.io/psp-survival-gu
 
 During development, assume expanded 64MB RAM for PSP-2000 onwards. A final release should eventually aim to be 32MB compatible but a 1.0 release for 64MB is fine.
 
-Keep comments concise. Don't create fake handmade bridges where the original code can be used.
+Keep comments concise. Don't create fake handmade bridges where the original code can be used. Prioritise the USA Dreamcast build, but avoid total dependency to allow a potential bridge for future for PC or PAL.

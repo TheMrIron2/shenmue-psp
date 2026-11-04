@@ -716,13 +716,35 @@ bool SCEN_HasRuntimeObject(std::uint32_t characterName) noexcept {
     return FindScenRuntimeObject(characterName) != nullptr;
 }
 
+namespace {
+
+const char *ScenarioModuleStatusText(ScenarioModuleStatus status) {
+    switch (status) {
+    case ScenarioModuleStatus::Ok:
+        return "ok";
+    case ScenarioModuleStatus::Truncated:
+        return "truncated or missing";
+    case ScenarioModuleStatus::BadToken:
+        return "bad token";
+    case ScenarioModuleStatus::NativeProfile:
+        return "native SH-4 profile";
+    case ScenarioModuleStatus::BadLayout:
+        return "bad header layout";
+    case ScenarioModuleStatus::BadRelocation:
+        return "bad relocation table";
+    }
+    return "unknown";
+}
+
+} // namespace
+
 bool SCEN_LoadCurrentMapScript(ScenarioWindow *window) {
     if (!window)
         return false;
 
     while (window->stacks) {
         ScenarioStack *const stack = window->stacks;
-        window->stacks = *reinterpret_cast<ScenarioStack **>(stack->frame + 4);
+        window->stacks = stack->nextStack;
         HLib_FreeTaskData(reinterpret_cast<HLib::TaskData *>(stack), 0);
     }
     if (g_scenOwnedRecordStorage.scenarioFile) {
@@ -736,13 +758,13 @@ bool SCEN_LoadCurrentMapScript(ScenarioWindow *window) {
         static_cast<char>(g_areaId >> 16U), static_cast<char>(g_areaId >> 24U));
 
     auto &file = g_scenOwnedRecordStorage.scenarioFile;
+    const std::uint64_t fileSize = shenOpenFile("scenario", filename);
     file = static_cast<HLib::TaskData *>(ReadFile("scenario", filename, static_cast<std::int32_t>(SHEN_NAME(INFO))));
-    const auto *const info = reinterpret_cast<const ScenarioHeader *>(file);
-    const auto offsetWithinFile = [info](std::int32_t offset) {
-        return info && offset >= static_cast<std::int32_t>(sizeof(ScenarioHeader)) && offset < info->wholeSize;
-    };
-    if (!info || info->wholeSize < static_cast<std::int32_t>(sizeof(ScenarioHeader)) || !offsetWithinFile(info->functionOffset) ||
-        !offsetWithinFile(info->dataSegmentOffset) || !offsetWithinFile(info->entrypoint)) {
+    auto *const info = reinterpret_cast<ScenarioHeader *>(file);
+    const ScenarioModuleStatus status =
+        info ? ScenValidateModule(reinterpret_cast<const std::byte *>(info), fileSize) : ScenarioModuleStatus::Truncated;
+    if (status != ScenarioModuleStatus::Ok || !ScenApplyModuleRelocations(info, fileSize)) {
+        std::fprintf(stderr, "scenario module %s rejected: %s\n", filename, ScenarioModuleStatusText(status));
         if (file)
             HLib_FreeTaskData(file, 0);
         file = nullptr;
@@ -753,7 +775,7 @@ bool SCEN_LoadCurrentMapScript(ScenarioWindow *window) {
         window->entrypoint = nullptr;
         return false;
     }
-    Startup_EventBase(window, reinterpret_cast<ScenarioHeader *>(file));
+    Startup_EventBase(window, info);
     return true;
 }
 

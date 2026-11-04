@@ -1,4 +1,8 @@
 #include "s1/mt5_render.hpp"
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/scene_renderer.hpp"
+#include "psp/boot_log.hpp"
+#endif
 #include "s1/d3t/namespace.hpp"
 
 #include "s1/task/char.hpp"
@@ -962,6 +966,9 @@ RiggedNodeSpecialState ApplyRiggedNodeSpecialState(Mt5Node &node, float alpha) {
 }
 
 bool ResolveSceneShaders() {
+#if defined(SHENMUE_HOST_PSP)
+    return true;
+#endif
     const std::int32_t layoutIndex = g_tmpInputLayoutIndex.inputLayoutIndex;
     g_currentInputLayout =
         layoutIndex >= 0 && static_cast<std::size_t>(layoutIndex) < g_fvfLayouts.size() ? g_fvfLayouts[static_cast<std::size_t>(layoutIndex)] : 0;
@@ -1221,7 +1228,7 @@ void PushStripMetaIntoShaderConstants(const std::uint16_t *&command, std::uint8_
 }
 
 void DrawObject(D3TDeviceContext *context, GameNode *object, std::int32_t index, std::uint32_t startVertex, const MaterialState &material, bool transparent,
-    std::uint8_t shaderMode, ShaderParams &parameters) {
+    std::uint8_t shaderMode, ShaderParams &parameters, std::int32_t bufferHandle) {
     const auto *const records = &object->vertexCount;
     const std::int32_t surface = static_cast<std::int32_t>(records[index * 3 + 1]);
     const std::uint32_t materialFlags = records[index * 3 + 2];
@@ -1230,6 +1237,20 @@ void DrawObject(D3TDeviceContext *context, GameNode *object, std::int32_t index,
         texture = d3t::g_defaultWhiteTexture;
 #ifdef SHENMUE_RT_ARCADE
     texture = RTArcade_ResolveTexture(texture);
+#endif
+#if defined(SHENMUE_HOST_PSP)
+    std::int32_t bytes = 0;
+    const auto *const vertices = static_cast<const Matrix4x4 *>(d3t::GetBufferCpuData(bufferHandle, &bytes));
+    const std::uint32_t count = records[index * 3];
+    if (vertices && startVertex <= static_cast<std::uint32_t>(bytes) / sizeof(Matrix4x4) &&
+        count <= static_cast<std::uint32_t>(bytes) / sizeof(Matrix4x4) - startVertex) {
+        psp::SceneMaterial guMaterial{texture, transparent, material.alphaTestEnabled != 0, material.alphaReference,
+                                      parameters.constants[16].w};
+        if (psp::QueueSceneTriangles(vertices + startVertex, count, workTransformMatrix, g_cameraProjectionMatrix,
+                                     guMaterial, g_currentSettings.display.aspectRatio != 0))
+            ++g_drawCount;
+    }
+    return;
 #endif
     BindTexture(context, ResolveStripTextureHandle(texture));
 
@@ -2258,8 +2279,10 @@ void DrawSceneObjectFromCommandStream(void *commandStreamOwner, float alphaScale
         return;
     }
     const Matrix4x4 modelTransform = workTransformMatrix;
+#if !defined(SHENMUE_HOST_PSP)
     ConvertAndPushCurrentMatrixToShaderBlock();
     PrepareSceneLightingForRendering();
+#endif
     const std::int32_t *const bufferHandleOverride = g_effectBufferHandleOverride;
     g_effectBufferHandleOverride = nullptr;
     const std::int32_t bufferHandle = (binding->flags & 0x10U) != 0U && bufferHandleOverride ? *bufferHandleOverride : entry->bufferHandle;
@@ -2360,7 +2383,7 @@ void DrawSceneObjectFromCommandStream(void *commandStreamOwner, float alphaScale
             parameters.useEnvironmentMap = opcode == 19U;
             ParseGeometryCommand(command);
             if (g_replayingEffectQueue ? material.renderClass == 2U : material.renderClass != 2U) {
-                DrawObject(context, entry, drawIndex, startVertex, material, transparent, shaderMode, parameters);
+                DrawObject(context, entry, drawIndex, startVertex, material, transparent, shaderMode, parameters, bufferHandle);
             }
             SetRenderFlags_NoIgnoreLighting();
             startVertex += (&entry->vertexCount)[drawIndex * 3];

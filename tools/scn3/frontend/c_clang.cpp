@@ -414,9 +414,9 @@ void runClang(const std::string &text, std::unique_ptr<clang::FrontendAction> ac
     const llvm::IntrusiveRefCntPtr<clang::FileManager> manager(new clang::FileManager(clang::FileSystemOptions(), files));
     std::string diagnostics;
     llvm::raw_string_ostream output(diagnostics);
-    const llvm::IntrusiveRefCntPtr<clang::DiagnosticOptions> options(new clang::DiagnosticOptions());
-    options->ShowOptionNames = true;
-    clang::TextDiagnosticPrinter printer(output, options.get());
+    clang::DiagnosticOptions options;
+    options.ShowOptionNames = true;
+    clang::TextDiagnosticPrinter printer(output, options);
     clang::tooling::ToolInvocation invocation(arguments, std::move(action), manager.get());
     invocation.setDiagnosticConsumer(&printer);
     const bool compiled = invocation.run();

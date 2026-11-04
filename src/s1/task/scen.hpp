@@ -161,15 +161,42 @@ struct ScenarioBlock {
     std::uint32_t entryIndex;
 };
 
+// Fixed-width script VM context. The script-visible fields and word arrays are
+// laid out identically on every host; only the native implementation pointers
+// vary with pointer width. 32-bit script words are preserved so the VM argument
+// ABI does not follow the host pointer size.
+inline constexpr std::int32_t kScenarioSavedWordCount = 128;
+inline constexpr std::int32_t kScenarioAsyncArgumentWords = 136;
+
+// Top of the task VM operand stack, relative to ScenarioWindow::workspace. This
+// reproduces the original x86 layout (2436 words from the window base) without
+// assuming the host pointer width, so the PSP window is not overrun.
+inline constexpr std::uint32_t kScenarioVmStackTopOffset = 0x2538;
+inline constexpr std::uint32_t kScenarioVmStackRestoreEndOffset = 0x2540;
+
+// ScenarioContext status bits. Finished contexts are reaped; suspended contexts
+// are skipped until their async command completes; faulted is diagnostic only.
+inline constexpr std::uint16_t kScenarioContextFinished = 0x0001;
+inline constexpr std::uint16_t kScenarioContextSuspended = 0x0002;
+inline constexpr std::uint16_t kScenarioContextFaulted = 0x0004;
+
+#pragma pack(pop)
+
 struct ScenarioStack {
+    std::uint32_t accumulator;
+    std::uint16_t status;             // bit 0 = finished, bit 1 = suspended/waiting
+    std::uint16_t asyncFunctionIndex; // SCNF begin/update index
+    std::uint16_t previousOperand;
+    std::uint16_t trailingFlags;
+    std::uint32_t asyncArguments[kScenarioAsyncArgumentWords];
+    std::uint32_t savedWords[kScenarioSavedWordCount];
     std::byte *instruction;
     ScenarioRegisters *stackPointer;
     ScenarioRegisters *framePointer;
-    std::uint32_t accumulator;
-    std::byte frame[524];
-    std::uint16_t previousOperand;
-    std::uint16_t trailingFlags;
+    ScenarioStack *nextStack;
 };
+
+#pragma pack(push, 1)
 
 struct ScenarioContext;
 using SetScenarioStringArgumentFunction = void (*)(ScenarioContext *, std::int64_t, std::uint32_t, ScenarioRegisters *);
@@ -252,11 +279,15 @@ struct ScenarioFunctionWork {
 
 static_assert(sizeof(ScenarioHeader) == 0x30);
 static_assert(sizeof(ScenarioBlock) == 8);
-static_assert(sizeof(ScenarioStack) == 0x22c);
-static_assert(offsetof(ScenarioStack, accumulator) == 0x18);
-static_assert(offsetof(ScenarioStack, frame) == 0x1c);
-static_assert(offsetof(ScenarioStack, previousOperand) == 0x228);
-static_assert(offsetof(ScenarioStack, trailingFlags) == 0x22a);
+static_assert(offsetof(ScenarioStack, accumulator) == 0x00);
+static_assert(offsetof(ScenarioStack, status) == 0x04);
+static_assert(offsetof(ScenarioStack, asyncFunctionIndex) == 0x06);
+static_assert(offsetof(ScenarioStack, previousOperand) == 0x08);
+static_assert(offsetof(ScenarioStack, trailingFlags) == 0x0a);
+static_assert(offsetof(ScenarioStack, asyncArguments) == 0x0c);
+static_assert(offsetof(ScenarioStack, savedWords) == 0x0c + 4 * kScenarioAsyncArgumentWords);
+// The native pointer tail is naturally aligned per host and is only ever
+// accessed by name, so its offsets may differ between 32- and 64-bit builds.
 static_assert(sizeof(ScenarioWindow) == 0x2658);
 static_assert(offsetof(ScenarioWindow, stacks) == 0x10);
 static_assert(offsetof(ScenarioWindow, activeInfo) == 0x28);
@@ -378,6 +409,11 @@ std::uint32_t SCN_Parse(ScenarioContext *context, ScenarioStack *stack, Scenario
 std::uint32_t scenParseByPtr(ScenarioContext *context);
 std::uint32_t scenParseByPtr2Frames(ScenarioWindow *scenarioWindow, ScenarioStack *stack);
 void scenParseStackRecursively(ScenarioWindow *scenarioWindow);
+void scenCollectCompletedStacks(ScenarioWindow *window);
+enum class ScenarioModuleStatus { Ok, Truncated, BadToken, NativeProfile, BadLayout, BadRelocation };
+ScenarioModuleStatus ScenValidateModule(const std::byte *module, std::uint64_t availableSize);
+bool ScenApplyModuleRelocations(ScenarioHeader *module, std::uint64_t availableSize);
+std::uint32_t SCEN_GetVmFaultCount() noexcept;
 void SCEN_ParseRecursive();
 ScenarioStack *Startup_EventBase(ScenarioWindow *scenarioWindow, ScenarioHeader *info);
 

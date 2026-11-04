@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract a Dreamcast GDI disc to a flat directory using its ISO9660 tree.
+"""Extract a Dreamcast GDI or split-file Mode 1 BIN/CUE disc to a flat directory using its ISO9660 tree.
 
 Shenmue's GD-ROM stores the ISO9660 filesystem on the high-density data track
 (usually Track 3 at LBA 45000), but file extents are *absolute disc LBAs* and
@@ -44,6 +44,35 @@ def read_tracks(gdi):
             continue
         number, lba, kind, stride = map(int, fields[:4])
         tracks.append(Track(number, lba, kind, stride, (gdi.parent / fields[4]).resolve(), int(fields[5])))
+    return tracks
+
+
+def read_cue_tracks(cue):
+    tracks = []
+    current_file = None
+    for line in cue.read_text().splitlines():
+        fields = shlex.split(line)
+        if not fields:
+            continue
+        if fields[0] == "FILE":
+            current_file = (cue.parent / fields[1]).resolve()
+        elif fields[0] == "TRACK" and fields[2] == "MODE1/2352":
+            if current_file is None or any(t.path == current_file for t in tracks):
+                raise ValueError("CUE extraction requires separate raw files for data tracks")
+            with current_file.open("rb") as source:
+                for sector_index in range(451):
+                    sector = source.read(2352)
+                    if len(sector) != 2352:
+                        raise ValueError("Truncated CUE data track")
+                    if sector[:12] == b"\0" + b"\xff" * 10 + b"\0" and sector[15] == 1:
+                        msf = [(v >> 4) * 10 + (v & 15) for v in sector[12:15]]
+                        if any((v & 15) > 9 or (v >> 4) > 9 for v in sector[12:15]) or msf[1] >= 60 or msf[2] >= 75:
+                            raise ValueError("Invalid raw-sector MSF address")
+                        lba = (msf[0] * 60 + msf[1]) * 75 + msf[2] - 150
+                        tracks.append(Track(int(fields[1]), lba, 4, 2352, current_file, sector_index * 2352))
+                        break
+                else:
+                    raise ValueError("No Mode 1 sector within supported CUE pregap")
     return tracks
 
 
@@ -109,10 +138,24 @@ def extract_file(tracks, record, destination):
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("wb") as output:
         while remaining:
-            chunk = payload_sector(tracks, lba)[:remaining]
-            output.write(chunk)
-            remaining -= len(chunk)
-            lba += 1
+            track = find_track(tracks, lba)
+            with track.path.open("rb") as source:
+                source.seek(track.offset + (lba - track.lba) * track.stride)
+                while remaining and lba < track.lba + track.count:
+                    count = min(64, (remaining + 2047) // 2048, track.lba + track.count - lba)
+                    raw = source.read(count * track.stride)
+                    if len(raw) != count * track.stride:
+                        raise ValueError("Truncated file extent")
+                    for index in range(count):
+                        sector = raw[index * track.stride:(index + 1) * track.stride]
+                        if track.stride == 2352:
+                            if sector[:12] != b"\0" + b"\xff" * 10 + b"\0" or sector[15] != 1:
+                                raise ValueError(f"LBA {lba} is not Mode 1")
+                            sector = sector[16:2064]
+                        payload = sector[:remaining]
+                        output.write(payload)
+                        remaining -= len(payload)
+                        lba += 1
 
 
 def main():
@@ -124,7 +167,7 @@ def main():
     parser.add_argument("--skip-existing", action="store_true")
     args = parser.parse_args()
 
-    tracks = read_tracks(args.gdi.resolve())
+    tracks = read_cue_tracks(args.gdi.resolve()) if args.gdi.suffix.lower() == ".cue" else read_tracks(args.gdi.resolve())
     data_track = next((t for t in tracks if t.kind == 4 and t.lba >= 45000), None)
     if data_track is None:
         raise SystemExit("No high-density data track (LBA >= 45000)")

@@ -1,5 +1,6 @@
 #include "psp/psp_renderer.hpp"
 #include "psp/boot_log.hpp"
+#include "psp/scene_renderer.hpp"
 
 #include "d3t/dx11_renderer.hpp"
 #include "d3t/texture.hpp"
@@ -20,9 +21,7 @@
 namespace shenmue::psp {
 namespace {
 
-// A single synthetic device context stands in for the D3D11 device context so
-// the engine's render-state bookkeeping (which writes into `renderState`) keeps
-// working while nothing is rasterised.
+// Retain engine render-state bookkeeping while native GU owns rasterisation.
 d3t::D3TDeviceContext g_nullContext{};
 
 // Scratch destination for mapped constant-buffer writes. The null backend never
@@ -275,6 +274,7 @@ void PresentFrame(std::int32_t) {
     sceGuClearColor(clearColor);
     sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
     sceGuScissor(0, 0, kScreenWidth, kScreenHeight);
+    RenderQueuedScene();
     if (g_texturedQuadCount != 0) {
         sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
         sceGuTexFilter(GU_LINEAR, GU_LINEAR);
@@ -335,6 +335,7 @@ void PresentFrame(std::int32_t) {
             ++g_texturedPresentLogs;
     }
     g_texturedQuadCount = 0;
+    ResetSceneQueue();
     g_clearViewport = {0, 0, kScreenWidth, kScreenHeight};
     ++g_presentCount;
 #endif

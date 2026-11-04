@@ -270,3 +270,5 @@ src/s1/modules/harrier.cpp
 src/s1/modules/harrier_cpu.cpp
 src/s1/modules/harrier_render.cpp
 src/s1/modules/harrier_audio.cpp
+
+src/psp/scene_renderer.cpp

@@ -188,6 +188,7 @@ bool ArchiveData_LoadArchives(const char *root, const char *, std::uint32_t, Arc
     const char *candidates[] = {
         root,
         std::getenv("SHEN_ROOT"),
+        "host0:/USA/DISC1/extracted",
         "host0:/DISC1/extracted",
         "ms0:/PSP/GAME/Shenmue/data",
         "ms0:/PSP/GAME/Shenmue",

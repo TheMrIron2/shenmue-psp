@@ -392,6 +392,7 @@ void ParseMapEventScenario(ScenarioWindow *window, std::int32_t eventId, std::ui
     const std::array<std::uint32_t, 2> arguments{actorId, static_cast<std::uint32_t>(eventId)};
     ScenarioStack *const stack = scenAllocateScntForScript(window, nullptr, entry, arguments.data(), static_cast<std::int32_t>(arguments.size()));
     scenParseByPtr2Frames(window, stack);
+    scenCollectCompletedStacks(window);
 }
 
 } // namespace

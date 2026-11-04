@@ -882,10 +882,10 @@ std::array<DoorScenarioFunction, kDoorScenarioFunctionCount> DSWKFunctions = [] 
 void SetStrForScnArg(ScenarioContext *context, std::int64_t pointer, std::uint32_t, ScenarioRegisters *) {
     if (!context || !context->stack)
         return;
-    auto *const parameters = reinterpret_cast<std::uint32_t *>(reinterpret_cast<std::byte *>(context->stack) + 0x2c);
+    auto *const parameters = context->stack->asyncArguments;
     parameters[0] = pointer && g_pCurrentTaskData ? static_cast<std::uint32_t>(reinterpret_cast<const std::byte *>(pointer) - g_pCurrentTaskData) : 0;
     parameters[1] = 0xffffffffU;
-    *reinterpret_cast<std::uint16_t *>(reinterpret_cast<std::byte *>(context->stack) + 0x28) = 1;
+    context->stack->asyncFunctionIndex = 1;
     context->stack->accumulator = 0;
     if (SCNF_Functions[2])
         SCNF_Functions[2](context, parameters);
@@ -921,11 +921,11 @@ std::uint32_t g_tmpScnfReturnValue = 0;
 std::int64_t ExecuteSCNFScriptFn(ScenarioContext *context, std::uint32_t index, std::int64_t stackPointer, std::int32_t argumentCount) {
     if (!context || !context->stack)
         return 0;
-    auto *const parameters = reinterpret_cast<std::uint32_t *>(reinterpret_cast<std::byte *>(context->stack) + 0x2c);
+    auto *const parameters = context->stack->asyncArguments;
     const auto *const source = reinterpret_cast<const std::uint32_t *>(stackPointer);
     for (std::int32_t argument = 0; argument < argumentCount; ++argument)
         parameters[argument] = source[argument];
-    *reinterpret_cast<std::uint16_t *>(reinterpret_cast<std::byte *>(context->stack) + 0x28) = static_cast<std::uint16_t>(index);
+    context->stack->asyncFunctionIndex = static_cast<std::uint16_t>(index);
     context->stack->accumulator = 0;
     const SCNFScenarioFunction begin = SCNF_Functions[static_cast<std::size_t>(index) * 2U];
     const std::int64_t result = begin ? begin(context, parameters) : 0;

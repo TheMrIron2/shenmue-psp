@@ -7,6 +7,7 @@
 
 #if defined(SHENMUE_HOST_PSP)
 #include "psp/boot_log.hpp"
+#include "psp/psp_renderer.hpp"
 #endif
 
 #include "platform/performance_counter.hpp"
@@ -553,6 +554,10 @@ void BeginSceneFrameSubmission() {
     g_modernDayFraction = (static_cast<float>(1000 * seconds) + g_currentDeltaTimeSim) / 86400000.0f;
     ProcessHmdlResourceTransitions(1);
     RecomputeMatricesAndWaitSortTextureStack();
+#if defined(SHENMUE_HOST_PSP)
+    DX11::g_ppD3DDeviceContext = psp::DXGetPipelineContext(0);
+    SetActiveStack(MatrixStackType::DepthPrepass);
+#endif
 #if defined(_WIN32)
     AcquireScenePipelineContext();
     InitGameBuffers();

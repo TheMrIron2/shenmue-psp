@@ -733,7 +733,11 @@ PackModel *MT5_InitRawModelAndTextures(void *fileData, const char *entityName, c
         } else if (chunk->tag == kTexnChunk) {
             auto *texture = chunk;
             for (std::uint32_t index = 0; index < textureCount; ++index) {
+#if defined(SHENMUE_HOST_PSP)
+                textureIds[index] = LoadTEXN(texture, true, 256, PspTextureStorage::Swizzled16);
+#else
                 textureIds[index] = LoadTEXN(texture);
+#endif
                 if (remapContext) {
                     if (const std::uint32_t textureHandle = GetPVRSurfaceTextureHandle(textureIds[index]))
                         d3t::CheckAndRemapIfNeeded(remapContext, static_cast<std::int32_t>(index), textureHandle);
