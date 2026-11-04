@@ -21,6 +21,10 @@ endif
 PSP_EBOOT_TITLE = Shenmue
 PSP_LARGE_MEMORY = 1
 
+PSP_EBOOT_ICON = src/psp/EBOOT/ICON0.PNG
+PSP_EBOOT_PIC1 = src/psp/EBOOT/PIC1.PNG
+PSP_EBOOT_SND0 = src/psp/EBOOT/SND0.AT3
+
 PSPSDK := $(shell psp-config --pspsdk-path)
 PSPDEV := $(shell psp-config --pspdev-path)
 
