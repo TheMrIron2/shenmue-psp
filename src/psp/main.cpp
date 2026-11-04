@@ -13,9 +13,12 @@ PSP_MODULE_INFO(Shenmue, 0, 1, 0);
 // The engine uses the VFPU (floating point) heavily and relies on a large heap
 // for the D3T scratch buffer and scene memory.
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
-// Negative = "all remaining memory minus |n| KB" (reserve 1 MB for stack), so
-// the heap adapts to whatever partition the EBOOT is given.
-PSP_HEAP_SIZE_KB(-1024);
+// The recovered init path stacks deep frames (InitMain -> InitSpriteBank ->
+// PACK_Drain -> PACK_Callback); 256 KB was not enough on hardware.
+PSP_MAIN_THREAD_STACK_SIZE_KB(1024);
+// Negative = "all remaining memory minus |n| KB" (reserve the stack + slack),
+// so the heap adapts to whatever partition the EBOOT is given.
+PSP_HEAP_SIZE_KB(-2048);
 
 extern "C" int main(int argc, char **argv) {
     shenmue::psp::InitBootLog(argc, argv);

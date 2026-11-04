@@ -547,12 +547,40 @@ void HLib_mainModule(HLib::TaskData *) {
     if (traceFrame)
         psp::BootLog("HLib_mainModule: depth and composition effects complete");
 #endif
+#if defined(SHENMUE_HOST_PSP)
+    if (traceFrame)
+        psp::BootLog("HLib_mainModule: effect replay 1 begin");
+#endif
     EFFE_ReplayQueuedEffects(1);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceFrame)
+        psp::BootLog("HLib_mainModule: draw character shadows begin");
+#endif
     DrawCharacterShadows();
+#if defined(SHENMUE_HOST_PSP)
+    if (traceFrame)
+        psp::BootLog("HLib_mainModule: projected shadows begin");
+#endif
     EFFE_DrawProjectedShadows();
+#if defined(SHENMUE_HOST_PSP)
+    if (traceFrame)
+        psp::BootLog("HLib_mainModule: effect queue run begin");
+#endif
     EFFE_ReplayQueue(0, 0, EffectQueueEntryKind::Run);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceFrame)
+        psp::BootLog("HLib_mainModule: ppfx begin");
+#endif
     SetupPPFX(DX11::g_ppD3DDeviceContext);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceFrame)
+        psp::BootLog("HLib_mainModule: effects finish begin");
+#endif
     EFFE_FinishQueuedEffects();
+#if defined(SHENMUE_HOST_PSP)
+    if (traceFrame)
+        psp::BootLog("HLib_mainModule: finish submission begin");
+#endif
     FinishSceneFrameSubmission();
 #if defined(SHENMUE_HOST_PSP)
     if (traceFrame)

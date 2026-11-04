@@ -108,6 +108,8 @@ bool ScenarioHeaderPassesLayout(const ScenarioHeader &header) {
 
 } // namespace
 
+ScenarioVmCallHook g_scenVmCallHook = nullptr;
+
 std::uint32_t SCEN_GetVmFaultCount() noexcept {
     return g_scenVmFaultCount;
 }
@@ -288,6 +290,7 @@ std::uint32_t SCN_Parse(ScenarioContext *context, ScenarioStack *stack, Scenario
     for (;;) {
         if (!canReadInstruction(instruction, 1))
             return fail();
+        const std::byte *const instructionStart = instruction;
         const auto opcode = static_cast<std::uint8_t>(*instruction++);
 
         if ((opcode & 0xc0U) == 0x40U) {
@@ -606,6 +609,8 @@ std::uint32_t SCN_Parse(ScenarioContext *context, ScenarioStack *stack, Scenario
                 !canReadStackWords(1)) {
                 return fail();
             }
+            if (g_scenVmCallHook)
+                g_scenVmCallHook(context, instructionStart, static_cast<std::uint32_t>(operand), false);
             accumulator = static_cast<std::uint32_t>(ExecuteShenmueScriptFn(context, operand, stackPointer));
             break;
         case 12: {
@@ -616,6 +621,8 @@ std::uint32_t SCN_Parse(ScenarioContext *context, ScenarioStack *stack, Scenario
                 !canReadStackWords(static_cast<std::size_t>(argumentCount))) {
                 return fail();
             }
+            if (g_scenVmCallHook)
+                g_scenVmCallHook(context, instructionStart, static_cast<std::uint32_t>(operand), true);
             const std::int64_t result =
                 ExecuteSCNFScriptFn(context, static_cast<std::uint32_t>(operand), reinterpret_cast<std::int64_t>(stackPointer), argumentCount);
             if ((result & 0x10000) != 0) {

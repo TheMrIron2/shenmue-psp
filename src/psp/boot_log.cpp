@@ -1,6 +1,7 @@
 #include "psp/boot_log.hpp"
 
 #include <pspiofilemgr.h>
+#include <pspthreadman.h>
 #include <malloc.h>
 
 #include <cstdarg>
@@ -75,9 +76,10 @@ void BootLog(const char *format, ...) {
 
 void BootLogHeap(const char *stage) {
     const struct mallinfo heap = mallinfo();
-    BootLog("heap: %s arena=%u used=%u free=%u top=%u", stage ? stage : "<unknown>",
+    BootLog("heap: %s arena=%u used=%u free=%u top=%u stack=%d", stage ? stage : "<unknown>",
             static_cast<unsigned>(heap.arena), static_cast<unsigned>(heap.uordblks),
-            static_cast<unsigned>(heap.fordblks), static_cast<unsigned>(heap.keepcost));
+            static_cast<unsigned>(heap.fordblks), static_cast<unsigned>(heap.keepcost),
+            sceKernelGetThreadStackFreeSize(0));
 }
 
 } // namespace shenmue::psp

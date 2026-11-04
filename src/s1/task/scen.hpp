@@ -410,6 +410,10 @@ std::uint32_t scenParseByPtr(ScenarioContext *context);
 std::uint32_t scenParseByPtr2Frames(ScenarioWindow *scenarioWindow, ScenarioStack *stack);
 void scenParseStackRecursively(ScenarioWindow *scenarioWindow);
 void scenCollectCompletedStacks(ScenarioWindow *window);
+// Optional diagnostic hook called at the Shenmue/SCNF command boundary. `async`
+// is true for SCNF commands. `instruction` is the start of the call instruction.
+using ScenarioVmCallHook = void (*)(ScenarioContext *context, const std::byte *instruction, std::uint32_t index, bool async);
+extern ScenarioVmCallHook g_scenVmCallHook;
 enum class ScenarioModuleStatus { Ok, Truncated, BadToken, NativeProfile, BadLayout, BadRelocation };
 ScenarioModuleStatus ScenValidateModule(const std::byte *module, std::uint64_t availableSize);
 bool ScenApplyModuleRelocations(ScenarioHeader *module, std::uint64_t availableSize);

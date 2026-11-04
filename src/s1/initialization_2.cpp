@@ -487,25 +487,71 @@ void InitSpriteBank(std::int32_t initSpriteTextures) {
     if (!initSpriteTextures)
         return;
 
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitSpriteBank: begin");
+    psp::BootLogHeap("InitSpriteBank");
+#endif
     PACK_Init();
     PackTaskData *const pack = g_packTaskData ? g_packTaskData : reinterpret_cast<PackTaskData *>(HLib_GetTaskDataForTask(g_packTask));
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitSpriteBank: pack=%p", static_cast<void *>(pack));
+#endif
+    if (!pack) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("InitSpriteBank: no pack task");
+#endif
+        return;
+    }
     pack->flags = PackDataLoadPksDirect;
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitSpriteBank: queue TEXTURES");
+#endif
     PACK_QueueFile("/MISC", "TEXTURES");
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLogHeap("before PACK_Drain");
+#endif
     PACK_Drain();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitSpriteBank: ready=%p", static_cast<void *>(pack->readyPack));
+#endif
     if (PackSlot *const ready = pack->readyPack) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("InitSpriteBank: snow");
+#endif
         if (const void *const snow = LoadFileIntoHeapMem(ready, "w_snow.pvr", 0x204e4942U))
             CreateDDSorPVR(snow);
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("InitSpriteBank: hamon");
+#endif
         if (const void *const hamon = LoadFileIntoHeapMem(ready, "w_hamon.pvr", 0x204e4942U))
             EFFE_CreateHamonTexture(hamon);
         g_texnTextureCacheBank[0] = 2;
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("InitSpriteBank: ascii");
+#endif
         LoadFileIntoHeapMem(ready, "ASCII.PVR", 0x204e4942U);
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("InitSpriteBank: comicon");
+#endif
         COMICONSPRLoad(ready);
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("InitSpriteBank: ld_nl");
+#endif
         void *const loading = LoadFileIntoHeapMem(ready, "LD_nl.SPR", 0x204e4942U);
         g_texnTextureCacheBank[0] = 2;
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("InitSpriteBank: loadtexn loading=%p", loading);
+#endif
         g_loadingSprite = loading ? LoadTEXN(loading) : -1;
         g_texnTextureCacheBank[0] = 0;
     }
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitSpriteBank: shutdown");
+#endif
     PACK_Shutdown();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitSpriteBank: done");
+#endif
 }
 
 extern std::uint32_t g_ClearColour;

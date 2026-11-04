@@ -72,3 +72,12 @@ $(OBJDIR)/%.o: %.cpp
 -include $(OBJS:.o=.d)
 
 include $(PSPSDK)/lib/build.mak
+
+# Default deployment artifact location.
+ifeq ($(BUILD_PRX),1)
+BPBDIR := build/psp
+all: $(BPBDIR)/EBOOT.PBP
+$(BPBDIR)/EBOOT.PBP: EBOOT.PBP
+	@mkdir -p $(dir $@)
+	cp $< $@
+endif

@@ -20,6 +20,10 @@
 #include "s1/texture_loader.hpp"
 #include "s1/timing.hpp"
 
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
+
 #include <array>
 #include <atomic>
 #include <bit>
@@ -267,6 +271,9 @@ bool PACK_IsOpenFileTableEntryActive(void *file) {
     if (!file)
         return false;
     const auto *const openFile = static_cast<const PackOpenFile *>(file);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("PACK_IsOpenFileTableEntryActive: file=%p id=%u", file, static_cast<unsigned>(openFile->fileId));
+#endif
     return Archive_HasPendingRead(openFile->fileId);
 }
 
@@ -1245,13 +1252,23 @@ void PACK_Callback(HLib::TaskData *taskData) {
         }
     }
 
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("PACK_Callback: enter loading=%p pending=%p active=%p rh=%08x", static_cast<void *>(pack->loadingSlot),
+                 static_cast<void *>(pack->pendingPakf), static_cast<void *>(pack->activeReader), static_cast<unsigned>(pack->renderHandleOrReadMode));
+#endif
     if ((!pack->loadingSlot && !pack->pendingPakf && !pack->activeReader) || PACK_IsRenderHandleValid(pack->renderHandleOrReadMode)) {
         PACK_YieldToInitCallback();
         return;
     }
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("PACK_Callback: guard passed");
+#endif
 
     PackSlot *loading = pack->loadingSlot;
     if (loading) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("PACK_Callback: loading flags=%08x async=%p", static_cast<unsigned>(loading->flags), static_cast<void *>(loading->asyncFile));
+#endif
         if ((loading->flags & PackSlotAsyncCachedRead) != 0) {
             const std::int32_t fileState = CheckFileInfo(loading->asyncFile);
             if (fileState == 2) {
@@ -1292,11 +1309,21 @@ void PACK_Callback(HLib::TaskData *taskData) {
                 goto process_readers;
             }
         } else if (PACK_IsOpenFileTableEntryActive(loading->asyncFile)) {
+#if defined(SHENMUE_HOST_PSP)
+            psp::BootLog("PACK_Callback: read pending");
+#endif
             goto process_readers;
         }
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("PACK_Callback: read complete");
+#endif
 
         PackSlot *const slot = pack->loadingSlot;
         pack->loadingSlot = nullptr;
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("PACK_Callback: slot=%p data=%p size=%u flags=%08x", static_cast<void *>(slot),
+                     static_cast<void *>(slot->pakData), static_cast<unsigned>(slot->pakSize), static_cast<unsigned>(slot->flags));
+#endif
 
         const std::uint32_t originalFlags = slot->flags;
         if ((originalFlags & PackSlotPaksPhase) == 0 || (pack->flags & PackDataLoadPksDirect) != 0) {
@@ -1308,7 +1335,13 @@ void PACK_Callback(HLib::TaskData *taskData) {
 
         if ((slot->flags & PackSlotGzip) != 0) {
             auto *const bytes = reinterpret_cast<std::byte *>(slot->pakData);
-            const std::uint32_t decompressedSize = *reinterpret_cast<std::uint32_t *>(bytes + slot->pakSize - 4);
+            // The gzip ISIZE trailer is unaligned for odd-sized packs (69486 for
+            // TEXTURES.PKS) and MIPS faults on unaligned word loads.
+            std::uint32_t decompressedSize = 0;
+            std::memcpy(&decompressedSize, bytes + slot->pakSize - 4, sizeof(decompressedSize));
+#if defined(SHENMUE_HOST_PSP)
+            psp::BootLog("PACK_Callback: gzip compressed=%u decompressed=%u", static_cast<unsigned>(slot->pakSize), static_cast<unsigned>(decompressedSize));
+#endif
             const std::int64_t slotIndex = PACK_GetSlotIndex(slot);
             void *const decompressed = HLib_AllocHeapMemBlock(decompressedSize, ((static_cast<std::int32_t>(slotIndex) + 97) << 24) | kPackAllocationToken);
             void *const work3000 = HLib_AllocMemBlock(0x3000, 0);
@@ -1317,7 +1350,13 @@ void PACK_Callback(HLib::TaskData *taskData) {
                 LoadFile(slot);
                 return;
             }
+#if defined(SHENMUE_HOST_PSP)
+            psp::BootLog("PACK_Callback: inflate");
+#endif
             decompress(slot->pakData, decompressed, 0, 0, decompressedSize, 0, slot->pakSize);
+#if defined(SHENMUE_HOST_PSP)
+            psp::BootLog("PACK_Callback: inflated magic=%08x", static_cast<unsigned>(reinterpret_cast<PakFileHeader *>(decompressed)->magic));
+#endif
             HLib_FreeTaskData(static_cast<HLib::TaskData *>(work1000), 0);
             HLib_FreeTaskData(static_cast<HLib::TaskData *>(work3000), 0);
             HLib_FreeTaskData(reinterpret_cast<HLib::TaskData *>(slot->pakData), 0);
@@ -1333,15 +1372,24 @@ void PACK_Callback(HLib::TaskData *taskData) {
 
 process_readers:
     PackSlot *const pending = pack->pendingPakf;
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("PACK_Callback: readers pending=%p active=%p", static_cast<void *>(pending), static_cast<void *>(pack->activeReader));
+#endif
     if (pending && AllocatePAKT(pack, pending)) {
         pack->pendingPakf = nullptr;
         pack->activeReader = pending;
     }
 
     PackSlot *const active = pack->activeReader;
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("PACK_Callback: reader magic=%08x", active ? static_cast<unsigned>(active->pakData->magic) : 0U);
+#endif
     if (!active || !PKF_Reader(pack, active)) {
         return;
     }
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("PACK_Callback: reader done magic=%08x", static_cast<unsigned>(active->pakData->magic));
+#endif
 
     const std::uint32_t pakType = active->pakData->magic;
     if (pakType != kPakfMagic) {
@@ -1362,6 +1410,9 @@ process_readers:
                     reinterpret_cast<std::uint32_t *>(active->textureIds)[-7] |= 1;
                 }
             }
+#if defined(SHENMUE_HOST_PSP)
+            psp::BootLog("PACK_Callback: PAKS ready");
+#endif
             pack->readyPack = active;
         }
         pack->activeReader = nullptr;
@@ -1438,6 +1489,11 @@ void PACK_Init() {
 task_ready:
     g_packTask = task;
     auto *const data = reinterpret_cast<PackTaskData *>(task ? task->task_data_ptr : nullptr);
+    if (!data) {
+        std::fprintf(stderr, "PACK_Init: pack task allocation failed\n");
+        g_packTask = nullptr;
+        return;
+    }
     data->tag = SHEN_NAME(PACK);
     data->chidParseGuard = 0;
     data->usePackCache = 0;
@@ -1771,11 +1827,29 @@ void PACK_Drain() {
         pack = reinterpret_cast<PackTaskData *>(HLib_GetTaskDataForTask(g_packTask));
     }
 
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLogHeap("PACK_Drain entry");
+#endif
+    int drainIterations = 0;
     while (pack->loadingSlot || pack->pendingPakf || pack->activeReader || PACK_IsRenderHandleValid(pack->renderHandleOrReadMode)) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("PACK_Drain: callback #%d slot=%p pending=%p active=%p", drainIterations++,
+                     static_cast<void *>(pack->loadingSlot), static_cast<void *>(pack->pendingPakf),
+                     static_cast<void *>(pack->activeReader));
+#endif
         PACK_Callback(reinterpret_cast<HLib::TaskData *>(pack));
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("PACK_Drain: render");
+#endif
         RenderScreen();
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("PACK_Drain: close");
+#endif
         d3t_CloseRenderHandle(pack->renderHandleOrReadMode);
     }
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("PACK_Drain: done");
+#endif
 }
 
 

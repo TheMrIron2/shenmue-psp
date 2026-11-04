@@ -24,6 +24,41 @@
 #include <unordered_map>
 #include <vector>
 
+#if defined(SHENMUE_HOST_PSP)
+#include <pspkernel.h>
+#include <pspthreadman.h>
+// The pspdev C++ macro stringizes its first argument; pass it unquoted.
+PSP_MODULE_INFO(ScenPhase1Test, 0, 1, 0);
+PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
+PSP_HEAP_SIZE_KB(-1024);
+
+namespace {
+constexpr const char *kPspStagePaths[] = {"ms0:/scen_phase1_result.txt", "host0:/scen_phase1_result.txt"};
+
+void ResetPspStage() {
+    for (const char *path : kPspStagePaths) {
+        if (std::FILE *file = std::fopen(path, "w"))
+            std::fclose(file);
+    }
+}
+
+void WritePspStage(const char *text) {
+    for (const char *path : kPspStagePaths) {
+        if (std::FILE *file = std::fopen(path, "a")) {
+            std::fprintf(file, "%s\n", text);
+            std::fclose(file);
+            return;
+        }
+    }
+}
+} // namespace
+#define PSP_RESET() ResetPspStage()
+#define PSP_STAGE(text) WritePspStage(text)
+#else
+#define PSP_RESET() ((void)0)
+#define PSP_STAGE(text) ((void)0)
+#endif
+
 namespace shenmue::s1 {
 
 namespace {
@@ -33,6 +68,7 @@ std::vector<void *> g_freed;
 } // namespace
 
 std::byte *g_pCurrentTaskData = nullptr;
+ScenarioHeader *g_pSCN_INFO_TaskData = nullptr;
 
 void *HLib_AllocHeapMemBlock(std::int64_t size, std::int32_t) {
     const std::size_t bytes = static_cast<std::size_t>(size);
@@ -73,6 +109,8 @@ std::uint32_t HLib_GetTaskDataOffset(const void *pointer) {
 
 // Command-boundary stubs: the fixtures never dispatch a real command.
 void SetStrForScnArg(ScenarioContext *, std::int64_t, std::uint32_t, ScenarioRegisters *) {
+}
+void ExecuteRemovedScriptFn(std::int32_t, ScenarioContext *, std::int64_t, void *) {
 }
 std::int64_t ExecuteMemScriptFn(std::int32_t, void *) {
     return 0;
@@ -384,17 +422,35 @@ void testChildInsertedDuringPass() {
 } // namespace
 
 int main(int argc, char **argv) {
+    PSP_RESET();
+    PSP_STAGE("start");
+    PSP_STAGE("test: root return");
     testRootReturn();
+    PSP_STAGE("test: parent with child");
     testParentWithLiveChild();
+    PSP_STAGE("test: waiting sibling");
     testWaitingSiblingSurvives();
+    PSP_STAGE("test: insert during pass");
     testChildInsertedDuringPass();
+    PSP_STAGE("test: module relocations");
     testModuleRelocations();
+    PSP_STAGE("test: module rejections");
     testModuleRejections();
+    PSP_STAGE("test: relative address");
     testRelativeAddress();
+    PSP_STAGE("test: fault diagnostic");
     testFaultDiagnostic();
-    if (argc > 1)
+    if (argc > 1) {
+        PSP_STAGE("test: op02 module");
         testOp02Module(argv[1]);
+    }
     assert(g_allocSizes.empty() && "all allocations freed");
     std::fprintf(stderr, "all scenario VM fixtures passed\n");
+    PSP_STAGE("PASS");
+#if defined(SHENMUE_HOST_PSP)
+    // Keep the module alive briefly so "passed then exited" is distinguishable
+    // from an immediate kernel exit.
+    sceKernelDelayThread(3 * 1000 * 1000);
+#endif
     return 0;
 }

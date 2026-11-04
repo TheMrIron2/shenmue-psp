@@ -64,7 +64,10 @@ constexpr std::size_t kMallocArenaSize = 0x1200000;
 constexpr std::size_t kSmallBlockCount = 322;
 constexpr std::int32_t kHLib = SHEN_NAME(HLib);
 
-alignas(32) std::array<std::byte, kArenaSize> g_arena{};
+// The main HLib arena is allocated from the heap at init so it does not inflate
+// the PSP module's load image (.bss). initializeArena() zeroes it.
+std::byte *g_arena = nullptr;
+std::size_t g_arenaSize = 0;
 alignas(32) std::array<HLib::TaskData, kSmallBlockCount * 2> g_smallBlocks{};
 alignas(32) std::array<HLib::TaskData, 2> g_zero{};
 
@@ -153,8 +156,27 @@ void HLib_Init() {
         block->alignment = 0;
     }
 
-    HLib::TaskData *const base = reinterpret_cast<HLib::TaskData *>(g_arena.data());
-    initializeArena(base, kArenaSize, g_pFirstTaskData, g_pLastTaskData);
+    if (!g_arena) {
+        for (const std::size_t candidate : {kArenaSize, kArenaSize * 3 / 4, kArenaSize / 2, kArenaSize / 4}) {
+            g_arena = static_cast<std::byte *>(::operator new(candidate, std::align_val_t{32}, std::nothrow));
+            if (g_arena) {
+                g_arenaSize = candidate;
+                break;
+            }
+        }
+        if (!g_arena) {
+            std::fprintf(stderr, "HLib_Init: failed to allocate arena\n");
+#if defined(SHENMUE_HOST_PSP)
+            psp::BootLog("HLib_Init: arena allocation failed");
+#endif
+            return;
+        }
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("HLib_Init: arena=%u KB", static_cast<unsigned>(g_arenaSize / 1024));
+#endif
+    }
+    HLib::TaskData *const base = reinterpret_cast<HLib::TaskData *>(g_arena);
+    initializeArena(base, g_arenaSize, g_pFirstTaskData, g_pLastTaskData);
     g_pCurrentTaskData = reinterpret_cast<std::byte *>(base) + 0x80;
     g_pFirstTaskData_0 = g_pFirstTaskData;
     g_pLastTaskData_0 = g_pLastTaskData;
@@ -226,8 +248,8 @@ void HLib_FreeUseSpaces() {
                  static_cast<void *>(g_pLastTaskData_0));
 #endif
     constexpr std::size_t kMaximumBlocks = 65536;
-    const std::uintptr_t arenaBegin = reinterpret_cast<std::uintptr_t>(g_arena.data());
-    const std::uintptr_t arenaEnd = arenaBegin + g_arena.size();
+    const std::uintptr_t arenaBegin = reinterpret_cast<std::uintptr_t>(g_arena);
+    const std::uintptr_t arenaEnd = arenaBegin + g_arenaSize;
     std::size_t visited = 0;
     HLib::TaskData *block = g_pFirstTaskData_0;
     while (block && block != g_pLastTaskData_0) {
@@ -284,8 +306,8 @@ void *UpdateTaskData_0() {
 #endif
     std::uint64_t largestPayload = 0;
     HLib::TaskData *selected = nullptr;
-    const std::uintptr_t arenaBegin = reinterpret_cast<std::uintptr_t>(g_arena.data());
-    const std::uintptr_t arenaEnd = arenaBegin + g_arena.size();
+    const std::uintptr_t arenaBegin = reinterpret_cast<std::uintptr_t>(g_arena);
+    const std::uintptr_t arenaEnd = arenaBegin + g_arenaSize;
     std::size_t visited = 0;
     bool listInvalid = false;
     for (HLib::TaskData *block = g_pFirstTaskData; block; block = block->next_ptr) {
