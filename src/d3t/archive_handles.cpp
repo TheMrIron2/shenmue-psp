@@ -193,6 +193,19 @@ bool BeginArchiveRead(std::uint32_t handle, std::uint64_t offset, std::uint64_t 
         ReadFile(reinterpret_cast<HANDLE>(entry->platformHandle), entry->bufferedData, count, nullptr, reinterpret_cast<OVERLAPPED *>(&entry->overlapped)) != 0;
     if (!accepted)
         accepted = GetLastError() == ERROR_IO_PENDING;
+#elif defined(SHENMUE_HOST_PSP)
+    // PSP (newlib) has no pread; emulate it with lseek + read. Archive reads
+    // are issued from the single cooperative task thread, so the seek/read
+    // pair is not preempted by another archive access.
+    const int file = static_cast<int>(entry->platformHandle);
+    const off_t resume = lseek(file, 0, SEEK_CUR);
+    lseek(file, static_cast<off_t>(offset), SEEK_SET);
+    const ssize_t read = ::read(file, entry->bufferedData, count);
+    if (resume >= 0)
+        lseek(file, resume, SEEK_SET);
+    const bool accepted = read >= 0;
+    entry->overlapped.internal = accepted ? 0 : 1;
+    entry->overlapped.transferred = accepted ? static_cast<std::uintptr_t>(read) : 0;
 #else
     const ssize_t read = pread(static_cast<int>(entry->platformHandle), entry->bufferedData, count, static_cast<off_t>(offset));
     const bool accepted = read >= 0;
@@ -225,6 +238,16 @@ bool BeginArchiveWrite(std::uint32_t handle, std::uint64_t offset) {
                         reinterpret_cast<OVERLAPPED *>(&entry->overlapped)) != 0;
     if (!accepted)
         accepted = GetLastError() == ERROR_IO_PENDING;
+#elif defined(SHENMUE_HOST_PSP)
+    const int file = static_cast<int>(entry->platformHandle);
+    const off_t resume = lseek(file, 0, SEEK_CUR);
+    lseek(file, static_cast<off_t>(offset), SEEK_SET);
+    const ssize_t written = ::write(file, entry->bufferedData, count);
+    if (resume >= 0)
+        lseek(file, resume, SEEK_SET);
+    const bool accepted = written >= 0;
+    entry->overlapped.internal = accepted ? 0 : 1;
+    entry->overlapped.transferred = accepted ? static_cast<std::uintptr_t>(written) : 0;
 #else
     const ssize_t written = pwrite(static_cast<int>(entry->platformHandle), entry->bufferedData, count, static_cast<off_t>(offset));
     const bool accepted = written >= 0;
@@ -570,6 +593,20 @@ void Archive_QueueRead(std::uint32_t handle, std::int32_t operation, const char 
     if (!path || !Archive_DoesHandleExist(handle)) {
         return;
     }
+
+#if defined(SHENMUE_HOST_PSP) && defined(SHENMUE_USE_DC_ASSETS)
+    // Single-core PSP: perform the read inline instead of depending on a D3T
+    // worker thread that the cooperative engine would busy-wait on.
+    if (operation == 0) {
+        ArchiveHandleEntry *const entry = Archive_GetHandle(handle);
+        if (entry && entry->bufferedData) {
+            if (ArchiveData_Read(path, offset, entry->bufferedData, size)) {
+                entry->readSucceeded = 1;
+            }
+        }
+    }
+    return;
+#endif
 
     AsyncArchiveRequest *request = nullptr;
     while (!request) {

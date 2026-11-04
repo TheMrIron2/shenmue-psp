@@ -36,6 +36,10 @@
 #include "s1/subtitles.hpp"
 #include "s1/file_loader.hpp"
 
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
+
 #include <cfloat>
 #include "s1/task/cycle_man_internal.hpp"
 
@@ -639,6 +643,25 @@ uint32_t BeginUseMnrbEntry(CycleManager::NpcRecord &npc, char *record, uint32_t 
     ctx->morsEntryOffset = entry ? entry->lineDataOffset : 0;
     ctx->morsCommandOffset = 0;
     ctx->morsQueueNodeOffset = 0;
+#if defined(SHENMUE_HOST_PSP)
+    static uint32_t pruneTraceCount = 0;
+    if (entry && pruneTraceCount < 24) {
+        const auto &entries = g_cycleManagerRuntime.mnrbEntries;
+        const uintptr_t begin = reinterpret_cast<uintptr_t>(entries.data());
+        const uintptr_t address = reinterpret_cast<uintptr_t>(entry);
+        const size_t bytes = entries.size() * sizeof(CycleManager::MNRBEntry);
+        const bool inVector = address >= begin && address - begin < bytes &&
+                              (address - begin) % sizeof(CycleManager::MNRBEntry) == 0;
+        const uint32_t lineOffset = inVector ? entry->lineDataOffset : 0;
+        const uint32_t entryKind = inVector ? entry->entryKind : 0xffffffffu;
+        psp::BootLog("MNRB begin-use pre-prune #%u token=%08x entry=%p vector=%p size=%u capacity=%u index=%u inVector=%u lineOffset=%08x kind=%u",
+                     pruneTraceCount++, *reinterpret_cast<const uint32_t *>(record + 4), static_cast<void *>(entry),
+                     static_cast<const void *>(entries.data()), static_cast<unsigned>(entries.size()),
+                     static_cast<unsigned>(entries.capacity()),
+                     inVector ? static_cast<uint32_t>((address - begin) / sizeof(CycleManager::MNRBEntry)) : 0xffffffffu,
+                     inVector ? 1u : 0u, lineOffset, entryKind);
+    }
+#endif
     if (entry)
         CycleManager::PruneMNRBReservations(*entry);
     uint32_t skipped = 1;
@@ -1132,6 +1155,17 @@ bool TickMnrbBusStopUse(CycleManager::NpcRecord &npc, CycleManager::MNRBEntry *e
     const int32_t now = static_cast<int32_t>(CycleManager::CurrentTimeSeconds());
     Character *const character = live ? npc.cycle->obj : nullptr;
     MotionInformationWork *const motion = live ? npc.cycle->mot : nullptr;
+#if defined(SHENMUE_HOST_PSP)
+    static uint32_t traceCount = 0;
+    if (traceCount < 32) {
+        const uint32_t trace = traceCount++;
+        psp::BootLog("MNRB bus-use #%u npc=%p cycle=%p entry=%p live=%u state=%u opcode=%08x cmdOffset=%08x queueOffset=%u obj=%p motion=%p moveConfig=%p moveObj=%p",
+                     trace, static_cast<void *>(&npc), static_cast<void *>(npc.cycle), static_cast<void *>(entry), live,
+                     state, npc.cycle->currentOpcode, npc.cycle->morsCommandOffset, npc.cycle->morsQueueNodeOffset,
+                     static_cast<void *>(character), static_cast<void *>(motion), static_cast<void *>(npc.cycle->moveConfig),
+                     static_cast<void *>(npc.cycle->moveObjRef));
+    }
+#endif
     const bool unblocked = !character || !charaHasBlockingTPMRequest(character);
     npc.cycle->flags &= 0xFFFFFFDCu;
     g_EnvPrngSeed = LcgStep(g_EnvPrngSeed);
@@ -1252,6 +1286,14 @@ bool TickMnrbBusStopUse(CycleManager::NpcRecord &npc, CycleManager::MNRBEntry *e
         const float length = static_cast<float>(MOTN_getFrameCountFromAnimId(npc.cycle->activeAnimId));
         float progress = length;
         if (character && motion && length > 127.0f) {
+#if defined(SHENMUE_HOST_PSP)
+            static uint32_t remainTraceCount = 0;
+            if (remainTraceCount < 16) {
+                psp::BootLog("MNRB remain #%u npc=%p cycle=%p state=%u activeAnim=%u length=%f motion=%p character=%p",
+                             remainTraceCount++, static_cast<void *>(&npc), static_cast<void *>(npc.cycle), state,
+                             npc.cycle->activeAnimId, length, static_cast<void *>(motion), static_cast<void *>(character));
+            }
+#endif
             progress = MOTI_GetPlayRateScaledRemain(*motion);
             float fraction = 0.1f;
             if (std::fabs(length - 127.0f) >= 0.00000011920929f) {
@@ -1501,9 +1543,29 @@ bool TickMnrbQueueUse(CycleManager::NpcRecord &npc, CycleManager::MNRBEntry *ent
 bool TickUseMnrbEntry(CycleManager::NpcRecord &npc, uint32_t live, int32_t time) {
     CycleManager::MobjCycle *const ctx = npc.cycle;
     CycleManager::MNRBEntry *const entry = CycleManager::FindMNRBEntryByLineOffset(ctx->morsEntryOffset);
+    const uint16_t kind = static_cast<uint16_t>(ctx->morsCommandStatus >> 16);
+#if defined(SHENMUE_HOST_PSP)
+    static uint32_t traceCount = 0;
+    if (entry && traceCount < 48) {
+        const uint32_t trace = traceCount++;
+        const auto &entries = g_cycleManagerRuntime.mnrbEntries;
+        const uintptr_t begin = reinterpret_cast<uintptr_t>(entries.data());
+        const uintptr_t address = reinterpret_cast<uintptr_t>(entry);
+        const size_t bytes = entries.size() * sizeof(CycleManager::MNRBEntry);
+        const bool inVector = entry && address >= begin && address - begin < bytes &&
+                              (address - begin) % sizeof(CycleManager::MNRBEntry) == 0;
+        const uint32_t index = inVector ? static_cast<uint32_t>((address - begin) / sizeof(CycleManager::MNRBEntry)) : 0xffffffffu;
+        const uint32_t name = inVector ? entry->name.name : 0;
+        const uint32_t entryKind = inVector ? entry->entryKind : 0xffffffffu;
+        psp::BootLog("MNRB tick-use pre-prune #%u npc=%p cycle=%p entryOffset=%08x status=%08x entry=%p vector=%p size=%u capacity=%u index=%u inVector=%u name=%08x entryKind=%u live=%u",
+                     trace, static_cast<void *>(&npc), static_cast<void *>(ctx), ctx->morsEntryOffset,
+                     ctx->morsCommandStatus, static_cast<void *>(entry), static_cast<const void *>(entries.data()),
+                     static_cast<unsigned>(entries.size()), static_cast<unsigned>(entries.capacity()), index,
+                     inVector ? 1u : 0u, name, entryKind, live);
+    }
+#endif
     if (entry)
         CycleManager::PruneMNRBReservations(*entry);
-    const uint16_t kind = static_cast<uint16_t>(ctx->morsCommandStatus >> 16);
     bool done = true;
     if (entry && kind == 0)
         done = CycleManager::TickMnrbBusStopUse(npc, entry, live);

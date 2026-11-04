@@ -24,7 +24,7 @@ static_assert(sizeof(ShaderInfo) == 8);
 static_assert(sizeof(AsyncShaderRecord) == 0x50);
 static_assert(offsetof(AsyncShaderRecord, shaders) == 0x10);
 
-std::array<AsyncShaderRecord, 0x2000> asyncShaderRecords{};
+std::array<AsyncShaderRecord, 0x200> asyncShaderRecords{};
 std::atomic<std::uint16_t> nextAsyncShaderRecord{0};
 
 void ShaderCleanupNoOp(void *) {

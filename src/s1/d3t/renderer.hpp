@@ -3,6 +3,10 @@
 #include "d3t/dx11_renderer.hpp"
 #include "s1/d3t/settings.hpp"
 
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/psp_renderer.hpp"
+#endif
+
 namespace shenmue::s1 {
 
 using D3TDeviceContext = d3t::D3TDeviceContext;
@@ -38,6 +42,29 @@ inline void d3t_PresentFrame(std::int32_t renderMode) {
 }
 inline void d3t_DumpFramePng(const char *filename) {
     d3t::DumpFramePng(filename);
+}
+#elif defined(SHENMUE_HOST_PSP)
+using psp::CreateConstantBuffers;
+using psp::CreateNewSRVTexture;
+using psp::CreateNewTexture2D;
+using psp::CreateUserDefinedAnnotations;
+using psp::CreateVertexBuffers;
+using psp::DX11_ResetMappedResources;
+using psp::DX11_SetupShadersForDXAndSetViewports;
+using psp::DX11_UnmapAndSyncShaderBindings;
+using psp::WaitForCommandListFinish;
+using psp::GetMappedConstantBuffer;
+using psp::MapTempConstantBufferForWriteDiscard;
+using psp::UnmapAndClearViews;
+
+inline D3TDeviceContext *d3t_DXGetPipelineContext(std::int32_t mode) {
+    return psp::DXGetPipelineContext(mode);
+}
+inline void d3t_PresentFrame(std::int32_t renderMode) {
+    psp::PresentFrame(renderMode);
+}
+inline void d3t_DumpFramePng(const char *filename) {
+    psp::DumpFramePng(filename);
 }
 #endif
 

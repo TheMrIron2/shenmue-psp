@@ -135,16 +135,16 @@ void SetSkinningTargetMask(const SkinningTexSortRecord *record, std::byte *workC
 std::uint32_t AllocateSkinningWorkHandle() {
     const std::uint32_t first = g_skinningWorkCacheCounter;
     std::uint32_t slot = first;
-    while ((g_skinningWorkCache.generations[slot] >> 7U) >= 0x1000000U) {
-        slot = (slot + 1U) & 0x7fU;
+    while ((g_skinningWorkCache.generations[slot] >> kWorkSlotBits) >= 0x1000000U) {
+        slot = (slot + 1U) & kWorkSlotMask;
         if (slot == first)
             return 0;
     }
-    const std::uint32_t next = (g_skinningWorkCache.generations[slot] >> 7U) + 1U;
+    const std::uint32_t next = (g_skinningWorkCache.generations[slot] >> kWorkSlotBits) + 1U;
     const std::uint32_t counter = (next & 0xff000000U) == 0x01000000U ? 1U : next;
-    const std::uint32_t generation = (counter | 0xff000000U) << 7U;
+    const std::uint32_t generation = (counter | 0xff000000U) << kWorkSlotBits;
     g_skinningWorkCache.generations[slot] = generation;
-    g_skinningWorkCacheCounter = (slot + 1U) & 0x7fU;
+    g_skinningWorkCacheCounter = (slot + 1U) & kWorkSlotMask;
     return generation | slot;
 }
 
@@ -846,8 +846,8 @@ CachedSkinningBufferSlot *ResolveCachedSkinningBuffer(std::uint32_t handle) {
 }
 
 std::byte *ResolveSkinningWorkCache(std::uint32_t handle) {
-    const std::uint32_t index = handle & 0x7fU;
-    if (g_skinningWorkCache.generations[index] != (handle & 0xffffff80U)) {
+    const std::uint32_t index = handle & kWorkSlotMask;
+    if (g_skinningWorkCache.generations[index] != (handle & ~kWorkSlotMask)) {
         return nullptr;
     }
     return g_skinningWorkCache.entries[index].data();
@@ -1235,8 +1235,8 @@ std::int32_t TexSort(void *data) {
             continue;
         }
         if (workCache) {
-            const std::uint32_t slot = cacheHandle & 0x7fU;
-            if (g_skinningWorkCache.generations[slot] == (cacheHandle & 0xffffff80U)) {
+            const std::uint32_t slot = cacheHandle & kWorkSlotMask;
+            if (g_skinningWorkCache.generations[slot] == (cacheHandle & ~kWorkSlotMask)) {
                 g_skinningWorkCache.generations[slot] &= 0x7fffffffU;
             }
         }
@@ -1402,8 +1402,8 @@ void ReleaseSkinningTexSortRecord(SkinningTexSortRecord *record) {
 
     for (std::uint32_t index = 0; index < record->cacheHandleCount; ++index) {
         const std::uint32_t handle = record->cacheHandles[index];
-        const std::uint32_t slot = handle & 0x7fU;
-        if (g_skinningWorkCache.generations[slot] == (handle & 0xffffff80U)) {
+        const std::uint32_t slot = handle & kWorkSlotMask;
+        if (g_skinningWorkCache.generations[slot] == (handle & ~kWorkSlotMask)) {
             g_skinningWorkCache.generations[slot] &= 0x7fffffffU;
         }
     }

@@ -6,7 +6,6 @@
 #include "s1/hlib.hpp"
 
 #include <cstring>
-#include <unordered_map>
 
 namespace shenmue::s1 {
 
@@ -16,30 +15,30 @@ std::uint32_t g_UploadedSceneRenderHandleCount = 0;
 Vector3 g_sceneBoundsMin{3.402823466e+38F, 3.402823466e+38F, 3.402823466e+38F};
 Vector3 g_sceneBoundsMax{-3.402823466e+38F, -3.402823466e+38F, -3.402823466e+38F};
 Vector3 g_scriptTransformScale{};
-namespace {
-std::unordered_map<const GameNode *, Matrix4x4> g_sceneNodeWorldTransforms;
-}
 
 void D3T_SetSceneNodeWorldTransform(const GameNode *node, const Matrix4x4 &transform) {
-    if (node)
-        g_sceneNodeWorldTransforms[node] = transform;
+    if (!node)
+        return;
+
+    auto *const mutableNode = const_cast<GameNode *>(node);
+    mutableNode->d3tWorldTransform = transform;
+    mutableNode->d3tWorldTransformValid = 1;
 }
 
 bool D3T_GetSceneNodeWorldTransform(const GameNode *node, Matrix4x4 *transform) {
     if (!node || !transform)
         return false;
 
-    const auto found = g_sceneNodeWorldTransforms.find(node);
-    if (found == g_sceneNodeWorldTransforms.end())
+    if (node->d3tWorldTransformValid == 0)
         return false;
 
-    *transform = found->second;
+    *transform = node->d3tWorldTransform;
     return true;
 }
 
 void D3T_RemoveSceneNodeWorldTransform(const GameNode *node) {
     if (node)
-        g_sceneNodeWorldTransforms.erase(node);
+        const_cast<GameNode *>(node)->d3tWorldTransformValid = 0;
 }
 
 void InitSceneDataWrapper() {

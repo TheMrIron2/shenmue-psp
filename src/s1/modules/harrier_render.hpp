@@ -8,7 +8,11 @@ namespace shenmue::s1 {
 
 inline constexpr std::size_t kHarrierPaletteColourCount = 0x8000;
 inline constexpr std::size_t kHarrierSpriteTextureCount = 96;
+#if defined(SHENMUE_HOST_PSP)
+inline constexpr std::size_t kHarrierTileTextureCount = 64; // reduced for PSP load budget
+#else
 inline constexpr std::size_t kHarrierTileTextureCount = 384;
+#endif
 inline constexpr std::size_t kHarrierTilePaletteOffset = 0xb0000;
 inline constexpr std::size_t kHarrierSpritePaletteOffset = 0xb0800;
 inline constexpr std::size_t kHarrierTilePaletteMapOffset = 0xb0f80;

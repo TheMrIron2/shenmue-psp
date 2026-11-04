@@ -5,6 +5,10 @@
 #include "s1/frame_pipeline.hpp"
 #include "s1/d3t/namespace.hpp"
 
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
+
 #include "platform/performance_counter.hpp"
 #include "s1/d3t/d3t_buffer.hpp"
 #include "s1/d3t/d3t_content.hpp"
@@ -767,9 +771,20 @@ void RenderScreen() {
 }
 
 void PresentLatestFrame() {
+#if defined(SHENMUE_HOST_PSP)
+    static bool tracedFirstPresent = false;
+    const bool tracePresent = !tracedFirstPresent;
+    tracedFirstPresent = true;
+    if (tracePresent)
+        psp::BootLog("PresentLatestFrame: begin");
+#endif
     g_presentDrawCounters[0] = 0;
     g_presentDrawCounters[1] = 0;
     UpdateMipMaps();
+#if defined(SHENMUE_HOST_PSP)
+    if (tracePresent)
+        psp::BootLog("PresentLatestFrame: mip update returned");
+#endif
     std::int32_t renderMode = g_NumFramesProcessed == 0 ? 1 : 0;
     if (b60fps) {
         renderMode = 2;
@@ -784,11 +799,22 @@ void PresentLatestFrame() {
             SetNewWindowDimensions(screenResolution->width, screenResolution->height);
         }
     }
+#elif defined(SHENMUE_HOST_PSP)
+    d3t_PresentFrame(renderMode);
+    g_hasPresentedGameFrame = true;
 #else
     static_cast<void>(renderMode);
 #endif
     if (ExecuteWeatherTaskQueue) {
+#if defined(SHENMUE_HOST_PSP)
+        if (tracePresent)
+            psp::BootLog("PresentLatestFrame: weather queue begin");
+#endif
         ExecuteWeatherTaskQueue();
+#if defined(SHENMUE_HOST_PSP)
+        if (tracePresent)
+            psp::BootLog("PresentLatestFrame: weather queue returned");
+#endif
     }
     ClearDebugTextQueue();
     g_originalStrip00VertexCursor = 0;
@@ -798,6 +824,10 @@ void PresentLatestFrame() {
         counter = 0;
     }
     d3t::ProfilePerf();
+#if defined(SHENMUE_HOST_PSP)
+    if (tracePresent)
+        psp::BootLog("PresentLatestFrame: complete");
+#endif
 }
 
 namespace d3t {

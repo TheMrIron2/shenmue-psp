@@ -18,6 +18,7 @@
 #include "s1/boot.hpp"
 #include "s1/graphics_resources.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -29,6 +30,13 @@
 #include <vector>
 
 #include <json/json.h>
+
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#include "psp/texture_layout.hpp"
+#include <pspthreadman.h>
+#include <psputils.h>
+#endif
 
 namespace shenmue::s1 {
 
@@ -65,6 +73,20 @@ static_assert(offsetof(TexnData, header) == 0x1c);
 
 std::int32_t g_textureAllocationNumber = 0;
 
+#if defined(SHENMUE_HOST_PSP)
+// The largest decoded texture observed in the verified title TEXN set is 2 MiB.
+// Keep that bounded scratch in BSS so it does not compete with the startup heap;
+// LoadTEXN rejects any later texture that exceeds this proven bring-up budget.
+constexpr std::size_t kPspDecodeScratchBytes = 2 * 1024 * 1024;
+alignas(64) std::array<std::byte, kPspDecodeScratchBytes> g_pvrDecodeScratch;
+SceUID g_pvrDecodeSemaphore = -1;
+
+void ReleaseRetainedPspTexturePixels(void *pixels) {
+    if (pixels)
+        HLib_FreeTaskData(static_cast<HLib::TaskData *>(pixels), 0);
+}
+#endif
+
 [[noreturn]] void unreachableNativePvrInput() {
 #if defined(_MSC_VER)
     __assume(0);
@@ -81,7 +103,7 @@ void *memcpyReverseBlocks(std::int32_t blockCount, std::int32_t elementCount, st
 
     std::int32_t remaining = blockCount - 1;
     std::int32_t index = 0;
-    const std::int32_t blockSize = elementCount * (bitsPerElement / 8);
+    const std::int32_t blockSize = ((bitsPerElement * elementCount / 8) + 3) & ~3;
     do {
         result = std::memcpy(static_cast<std::byte *>(destination) + index * blockSize, static_cast<const std::byte *>(source) + remaining * blockSize,
             static_cast<std::size_t>(blockSize));
@@ -93,16 +115,35 @@ void *memcpyReverseBlocks(std::int32_t blockCount, std::int32_t elementCount, st
 
 } // namespace
 
-std::int32_t LoadTEXN(void *texnData) {
+bool InitTextureLoader() {
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pvrDecodeSemaphore >= 0)
+        return true;
+    g_pvrDecodeSemaphore = sceKernelCreateSema("ShenmuePVRDecode", 0, 1, 1, nullptr);
+    psp::BootLog("texture loader: decode semaphore=%d scratch=%p bytes=%u", static_cast<int>(g_pvrDecodeSemaphore),
+                 static_cast<void *>(g_pvrDecodeScratch.data()), static_cast<unsigned>(g_pvrDecodeScratch.size()));
+    return g_pvrDecodeSemaphore >= 0;
+#else
+    return true;
+#endif
+}
+
+std::int32_t LoadTEXN(void *texnData, bool retainPspPixels, std::uint16_t maxPspDimension, PspTextureStorage pspStorage) {
     auto *const texn = static_cast<TexnData *>(texnData);
+#if defined(SHENMUE_HOST_PSP)
+    const bool traceTexture = g_textureAllocationNumber < 64;
+    if (traceTexture)
+        psp::BootLog("LoadTEXN: begin data=%p", texnData);
+#endif
     if (texn->magic != kTexnMagic) {
+#if defined(SHENMUE_HOST_PSP)
+        if (traceTexture)
+            psp::BootLog("LoadTEXN: invalid TEXN magic=%08x", static_cast<unsigned>(texn->magic));
+#endif
         return -1;
     }
 
     TextureUploadDescription upload{};
-    upload.width = static_cast<std::int16_t>(texn->header.width);
-    upload.height = static_cast<std::int16_t>(texn->header.height);
-
     PvrHeader *pvr = &texn->header;
     if (pvr->magic == kGbixMagic) {
         pvr = reinterpret_cast<PvrHeader *>(reinterpret_cast<std::byte *>(pvr) + pvr->dataSize + 8);
@@ -113,6 +154,11 @@ std::int32_t LoadTEXN(void *texnData) {
     if (pvr->magic != kPvrtMagic) {
         unreachableNativePvrInput();
     }
+
+    const std::int32_t sourceWidth = pvr->width;
+    const std::int32_t sourceHeight = pvr->height;
+    if (sourceWidth <= 0 || sourceHeight <= 0 || sourceWidth > INT16_MAX || sourceHeight > INT16_MAX)
+        return -1;
 
     std::int32_t bitsPerElement;
     if (pvr->pixelFormat <= 4) {
@@ -125,19 +171,154 @@ std::int32_t LoadTEXN(void *texnData) {
         unreachableNativePvrInput();
     }
 
-    const std::int32_t elementCount = pvr->width;
-    const std::int32_t blockCount = pvr->height;
-    const std::int32_t decodedSize = blockCount * (((bitsPerElement * elementCount / 8) + 3) & ~3);
-    void *const decoded = std::malloc(static_cast<std::size_t>(decodedSize));
-    PVR_DecodeMain(decoded, pvr);
+    const std::int32_t elementCount = sourceWidth;
+    const std::int32_t blockCount = sourceHeight;
+    const std::int64_t decodedSize64 = static_cast<std::int64_t>(blockCount) * (((bitsPerElement * elementCount / 8) + 3) & ~3);
+    if (decodedSize64 <= 0 || decodedSize64 > INT32_MAX)
+        return -1;
+    const std::int32_t decodedSize = static_cast<std::int32_t>(decodedSize64);
+    bool scaleForPsp = false;
+#if defined(SHENMUE_HOST_PSP)
+    std::int32_t outputWidth = sourceWidth;
+    std::int32_t outputHeight = sourceHeight;
+    if (maxPspDimension != 0 && (sourceWidth > maxPspDimension || sourceHeight > maxPspDimension)) {
+        if (bitsPerElement != 32)
+            return -1;
+        if (sourceWidth >= sourceHeight) {
+            outputWidth = maxPspDimension;
+            outputHeight = std::max(1, static_cast<std::int32_t>((static_cast<std::int64_t>(sourceHeight) * outputWidth + sourceWidth / 2) / sourceWidth));
+        } else {
+            outputHeight = maxPspDimension;
+            outputWidth = std::max(1, static_cast<std::int32_t>((static_cast<std::int64_t>(sourceWidth) * outputHeight + sourceHeight / 2) / sourceHeight));
+        }
+        scaleForPsp = true;
+    }
+#else
+    (void)retainPspPixels;
+    (void)maxPspDimension;
+    (void)pspStorage;
+    const std::int32_t outputWidth = sourceWidth;
+    const std::int32_t outputHeight = sourceHeight;
+#endif
+    upload.width = static_cast<std::int16_t>(outputWidth);
+    upload.height = static_cast<std::int16_t>(outputHeight);
+#if defined(SHENMUE_HOST_PSP)
+    const bool native16 = pspStorage == PspTextureStorage::Swizzled16 && bitsPerElement == 32 && pvr->pixelFormat <= 2;
+    const std::size_t pixelBytes = native16 ? 2U : 4U;
+    const std::uint32_t backendFormat = native16 ? (pvr->pixelFormat == 0 ? ::shenmue::d3t::kPspTexture5551 :
+        pvr->pixelFormat == 1 ? ::shenmue::d3t::kPspTexture5650 : ::shenmue::d3t::kPspTexture4444) : 2U;
+    const bool swizzled = native16 && outputWidth >= 8 && outputHeight >= 8 && outputWidth % 8 == 0 && outputHeight % 8 == 0;
+    const std::size_t outputBytes = (scaleForPsp || native16) ? static_cast<std::size_t>(outputWidth) * outputHeight * pixelBytes : decodedSize;
+#else
+    const std::size_t outputBytes = decodedSize;
+#endif
+#if defined(SHENMUE_HOST_PSP)
+    if (traceTexture)
+        psp::BootLog("LoadTEXN: ids=%08x:%08x pvr=%p format=%u data=%u width=%d height=%d bits=%d decoded=%d",
+                     static_cast<unsigned>(texn->textureIdHigh), static_cast<unsigned>(texn->textureIdLow), static_cast<void *>(pvr),
+                     static_cast<unsigned>(pvr->pixelFormat), static_cast<unsigned>(pvr->dataFormat), elementCount, blockCount,
+                     bitsPerElement, decodedSize);
+#endif
+    if (decodedSize <= 0 || blockCount <= 0 || elementCount <= 0) {
+#if defined(SHENMUE_HOST_PSP)
+        if (traceTexture)
+            psp::BootLog("LoadTEXN: invalid decoded size");
+#endif
+        return -1;
+    }
 
     const std::int32_t allocationNumber = g_textureAllocationNumber;
     const std::uint32_t tens = static_cast<std::uint32_t>(allocationNumber / 10 + '0');
     const std::uint32_t units = static_cast<std::uint32_t>(allocationNumber % 10 + '0');
     const std::int32_t token = static_cast<std::int32_t>(((tens | (units << 8)) << 16) | 0x5854u);
-    void *const pixels = HLib_AllocHeapMemBlock(2LL * decodedSize, token);
+
+#if defined(SHENMUE_HOST_PSP)
+    if (static_cast<std::size_t>(decodedSize) > g_pvrDecodeScratch.size()) {
+        if (traceTexture)
+            psp::BootLog("LoadTEXN: decode request exceeds PSP scratch bytes=%d capacity=%u", decodedSize,
+                         static_cast<unsigned>(g_pvrDecodeScratch.size()));
+        return -1;
+    }
+    if (!InitTextureLoader()) {
+        if (traceTexture)
+            psp::BootLog("LoadTEXN: PVR decode semaphore unavailable");
+        return -1;
+    }
+    const std::int32_t waitResult = sceKernelWaitSema(g_pvrDecodeSemaphore, 1, nullptr);
+    if (waitResult < 0) {
+        if (traceTexture)
+            psp::BootLog("LoadTEXN: PVR decode semaphore wait failed result=%d", waitResult);
+        return -1;
+    }
+    void *const decoded = g_pvrDecodeScratch.data();
+#else
+    void *const decoded = std::malloc(static_cast<std::size_t>(decodedSize));
+    if (!decoded) {
+        return -1;
+    }
+#endif
+
+#if defined(SHENMUE_HOST_PSP)
+    if (traceTexture)
+        psp::BootLog("LoadTEXN: decoder begin dst=%p", decoded);
+#endif
+    PVR_DecodeMain(decoded, pvr);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceTexture)
+        psp::BootLog("LoadTEXN: decoder returned");
+#endif
+
+#if defined(SHENMUE_HOST_PSP)
+    const std::size_t allocationBytes = outputBytes;
+#else
+    const std::size_t allocationBytes = 2ULL * outputBytes;
+#endif
+    void *const pixels = HLib_AllocHeapMemBlock(static_cast<std::int64_t>(allocationBytes), token);
+    if (!pixels) {
+#if defined(SHENMUE_HOST_PSP)
+        sceKernelSignalSema(g_pvrDecodeSemaphore, 1);
+#else
+        std::free(decoded);
+#endif
+#if defined(SHENMUE_HOST_PSP)
+        if (traceTexture)
+            psp::BootLog("LoadTEXN: pixel allocation failed bytes=%u", static_cast<unsigned>(allocationBytes));
+#endif
+        return -1;
+    }
+
+#if defined(SHENMUE_HOST_PSP)
+    if (scaleForPsp || native16) {
+        const auto *const source = static_cast<const std::byte *>(decoded);
+        auto *const destination = static_cast<std::byte *>(pixels);
+        for (std::int32_t row = 0; row < outputHeight; ++row) {
+            const std::int32_t sourceY = static_cast<std::int32_t>((static_cast<std::int64_t>(row) * sourceHeight) / outputHeight);
+            for (std::int32_t column = 0; column < outputWidth; ++column) {
+                const std::int32_t sourceX = static_cast<std::int32_t>((static_cast<std::int64_t>(column) * sourceWidth) / outputWidth);
+                const std::size_t sourceOffset = (static_cast<std::size_t>(sourceY) * sourceWidth + sourceX) * 4U;
+                const std::size_t destinationOffset = swizzled
+                    ? psp::SwizzledPixelOffset(outputWidth, column, row, pixelBytes)
+                    : (static_cast<std::size_t>(row) * outputWidth + column) * pixelBytes;
+                if (native16) {
+                    const auto *const rgba = reinterpret_cast<const std::uint8_t *>(source + sourceOffset);
+                    const std::uint16_t pixel = psp::PackPvrPixel16(rgba[0], rgba[1], rgba[2], rgba[3], pvr->pixelFormat);
+                    std::memcpy(destination + destinationOffset, &pixel, sizeof(pixel));
+                } else {
+                    std::memcpy(destination + destinationOffset, source + sourceOffset, 4);
+                }
+            }
+        }
+    } else {
+        std::memcpy(pixels, decoded, static_cast<std::size_t>(decodedSize));
+        // PSP GU texture coordinates use the decoded PVR row order directly.
+        // The PC upload path flips rows for its Direct3D convention; carrying
+        // that flip into GU turns all frontend lettering upside down.
+    }
+    sceKernelSignalSema(g_pvrDecodeSemaphore, 1);
+#else
     memcpyReverseBlocks(blockCount, elementCount, bitsPerElement, pixels, decoded);
     std::free(decoded);
+#endif
 
     ++g_textureAllocationNumber;
 
@@ -148,11 +329,75 @@ std::int32_t LoadTEXN(void *texnData) {
     upload.arenaOffset = static_cast<std::int32_t>(reinterpret_cast<std::uintptr_t>(pixels) - reinterpret_cast<std::uintptr_t>(g_pFirstTaskData) - 0x40);
 
     std::int32_t surface = PVR_FindOrAllocateSurface(texn->textureIdLow, texn->textureIdHigh);
-    if (surface >= 0 && d3t_UploadTexture2DToGPU(surface, &upload, pixels) == -1) {
+#if defined(SHENMUE_HOST_PSP)
+    if (traceTexture)
+        psp::BootLog("LoadTEXN: pixels=%p uploadBytes=%d arenaOffset=%d surface=%d", pixels, decodedSize, upload.arenaOffset, surface);
+#endif
+    if (surface < 0) {
+#if defined(SHENMUE_HOST_PSP)
+        if (traceTexture)
+            psp::BootLog("LoadTEXN: no PVR surface available");
+#endif
+        HLib_FreeTaskData(static_cast<HLib::TaskData *>(pixels), 0);
+        return -1;
+    }
+    const std::int32_t uploadResult = d3t_UploadTexture2DToGPU(surface, &upload, pixels);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceTexture)
+        psp::BootLog("LoadTEXN: upload result=%d surface=%d", uploadResult, surface);
+#endif
+    if (uploadResult == -1) {
+#if defined(SHENMUE_HOST_PSP)
+        if (traceTexture)
+            psp::BootLog("LoadTEXN: releasing failed upload surface=%d", surface);
+#endif
         PVR_FreeAllocatedSurfaceByIndex(surface);
         surface = -1;
     }
+#if defined(SHENMUE_HOST_PSP)
+    bool retained = false;
+    bool pixelsFreed = false;
+    if (surface >= 0 && retainPspPixels) {
+        const std::uint32_t textureHandle = GetPVRSurfaceTextureHandle(surface);
+        if (textureHandle == 0) {
+            psp::BootLog("LoadTEXN: no texture handle for retained surface=%d", surface);
+            PVR_FreeAllocatedSurfaceByIndex(surface);
+            surface = -1;
+        } else {
+            D3TTextureBackendView existing{};
+            if (GetTexture2DBackendView(textureHandle, &existing) && existing.texture) {
+                retained = true;
+                HLib_FreeTaskData(static_cast<HLib::TaskData *>(pixels), 0);
+                pixelsFreed = true;
+            } else {
+                sceKernelDcacheWritebackRange(pixels, static_cast<unsigned>(outputBytes));
+                retained = ::shenmue::d3t::AttachTexture2DBackendStorage(
+                    textureHandle, pixels, static_cast<std::uint32_t>(outputWidth), static_cast<std::uint32_t>(outputHeight), backendFormat,
+                    ReleaseRetainedPspTexturePixels, pixels, swizzled);
+                if (!retained) {
+                    psp::BootLog("LoadTEXN: failed to retain PSP texture pixels handle=%08x size=%u", static_cast<unsigned>(textureHandle),
+                                 static_cast<unsigned>(outputBytes));
+                    PVR_FreeAllocatedSurfaceByIndex(surface);
+                    surface = -1;
+                }
+            }
+        }
+    }
+    if (surface >= 0 && retainPspPixels && !retained) {
+        psp::BootLog("LoadTEXN: retained surface has no PSP texture storage surface=%d", surface);
+        PVR_FreeAllocatedSurfaceByIndex(surface);
+        surface = -1;
+    }
+    if (!retained && !pixelsFreed)
+        HLib_FreeTaskData(static_cast<HLib::TaskData *>(pixels), 0);
+#else
     HLib_FreeTaskData(static_cast<HLib::TaskData *>(pixels), 0);
+#endif
+#if defined(SHENMUE_HOST_PSP)
+    if (traceTexture)
+        psp::BootLog("LoadTEXN: complete surface=%d output=%dx%d bytes=%u retained=%d", surface, outputWidth, outputHeight,
+                     static_cast<unsigned>(outputBytes), retained ? 1 : 0);
+#endif
     return surface;
 }
 
@@ -182,9 +427,9 @@ static_assert(sizeof(TextureOverrideEntry) == 300);
 
 
 struct TextureOverrideTable {
-    std::array<TextureOverrideEntry, 0x1000> entries;
-    std::array<std::uint32_t, 0x1000> hashes;
-    std::array<std::uint16_t, 0x1000> probes;
+    std::array<TextureOverrideEntry, 0x100> entries;
+    std::array<std::uint32_t, 0x100> hashes;
+    std::array<std::uint16_t, 0x100> probes;
     std::uint32_t count;
 };
 

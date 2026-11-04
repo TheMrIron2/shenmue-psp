@@ -58,6 +58,10 @@ fs::path executableDirectory() {
     std::array<wchar_t, 32768> path{};
     const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
     return length != 0 && length < path.size() ? fs::path(path.data(), path.data() + length).parent_path() : fs::path{};
+#elif defined(SHENMUE_HOST_PSP)
+    // No /proc/self/exe on the PSP; asset paths are resolved from SHEN_ROOT or
+    // the current working directory instead.
+    return fs::path{};
 #else
     std::array<char, 4096> path{};
     const ssize_t length = readlink("/proc/self/exe", path.data(), path.size());

@@ -3,6 +3,15 @@
 #include "s1/steam.hpp"
 
 #include <bit>
+#include <cstdlib>
+#include <cstring>
+
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#include <malloc.h>
+#include <psputils.h>
+#endif
+
 namespace shenmue::s1::ui_runtime_detail {
 const char *GetSubsPathForLanguage(std::int32_t language);
 
@@ -1343,14 +1352,63 @@ const std::array<std::array<char, 512>, 3> &CurrentSubtitleLines() {
     return g_subtitleLines;
 }
 
+#if defined(SHENMUE_HOST_PSP)
+namespace {
+void ReleasePspFontAtlasPixels(void *pixels) {
+    std::free(pixels);
+}
+} // namespace
+#endif
+
 void PrepareSubtitleFontAtlas(void *data, std::uint32_t, void *loadedData, std::uint64_t loadedSize, const char *) {
     auto *const request = static_cast<SubtitleFontAtlasRequest *>(data);
     if (!request || !request->layer || !loadedData || request->width == 0 || request->height == 0 ||
         loadedSize < static_cast<std::uint64_t>(request->width) * request->height) {
         return;
     }
+#if defined(SHENMUE_HOST_PSP)
+    // The UI atlas is stored as BC3 (D3T format 30). Keep it compressed in
+    // main RAM and let the PSP GU's DXT5 texture path sample it directly.
+    const std::int64_t compressedSize = d3t::GetStride(static_cast<std::int32_t>(request->width), static_cast<std::int32_t>(request->height), 30);
+    if (compressedSize <= 0 || static_cast<std::uint64_t>(compressedSize) > loadedSize) {
+        psp::BootLog("PSP font atlas: invalid BC3 size=%lld loaded=%u dimensions=%ux%u", static_cast<long long>(compressedSize),
+                     static_cast<unsigned>(loadedSize), static_cast<unsigned>(request->width), static_cast<unsigned>(request->height));
+        return;
+    }
+    void *const pixels = ::memalign(16, static_cast<std::size_t>(compressedSize));
+    if (!pixels) {
+        psp::BootLog("PSP font atlas: allocation failed bytes=%u", static_cast<unsigned>(compressedSize));
+        return;
+    }
+    std::memcpy(pixels, loadedData, static_cast<std::size_t>(compressedSize));
+    const d3t::Texture2DDescription description{.width = request->width,
+        .height = request->height,
+        .arraySize = 1,
+        .mipLevels = 1,
+        .format = 30,
+        .bindFlags = 0,
+        .flags = 0,
+        .sampleCount = 1,
+        .sampleQuality = 0,
+        .reserved_24 = 0,
+        .initialData = nullptr};
+    const std::uint32_t texture = d3t::CreateTexture2D(&description);
+    if (!texture || !d3t::AttachTexture2DBackendStorage(texture, pixels, request->width, request->height, 30,
+                                                        ReleasePspFontAtlasPixels, pixels)) {
+        if (texture)
+            d3t::InitTexture2DResource(texture);
+        std::free(pixels);
+        psp::BootLog("PSP font atlas: texture attach failed handle=%08x", static_cast<unsigned>(texture));
+        return;
+    }
+    sceKernelDcacheWritebackRange(pixels, static_cast<unsigned>(compressedSize));
+    request->layer->texture.store(texture, std::memory_order_release);
+    psp::BootLog("PSP font atlas: retained texture=%08x dimensions=%ux%u format=BC3 bytes=%u", static_cast<unsigned>(texture),
+                 static_cast<unsigned>(request->width), static_cast<unsigned>(request->height), static_cast<unsigned>(compressedSize));
+#else
     const Texture2DDescription description{request->width, request->height, 1, 1, 30, 0, 0, 1, 0, 0, loadedData};
     request->layer->texture.store(CreateTexture2D(&description), std::memory_order_release);
+#endif
 }
 
 void InstallLegacyUIFontRecord(std::uint32_t language, const std::uint32_t *header, const std::byte *record, const char *path, std::uint32_t renderHandle) {

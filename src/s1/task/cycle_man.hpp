@@ -1003,6 +1003,11 @@ struct MNRBEntry {
 static_assert(sizeof(CycleManager::MNRBEntry::Reservation) == 40);
 static_assert(offsetof(CycleManager::MNRBEntry::Reservation, seatPos) == 24);
 static_assert(offsetof(CycleManager::MNRBEntry::Reservation, seatOrderKey) == 36);
+#if defined(SHENMUE_HOST_PSP)
+static_assert(sizeof(void *) == 4);
+static_assert(sizeof(CycleManager::MNRBEntry) == 0x40);
+static_assert(offsetof(CycleManager::MNRBEntry, reservationCount) == 0x38);
+#endif
 
 
 

@@ -27,7 +27,11 @@ namespace shenmue::s1 {
 bool g_shouldResetWindow = false;
 bool g_shouldQuit = false;
 bool g_hasPresentedGameFrame = false;
+#if defined(SHENMUE_HOST_PSP)
+std::int32_t g_isInputEnabled = 1;
+#else
 std::int32_t g_isInputEnabled = 0;
+#endif
 std::int32_t g_pendingClientRectUpdate = 0;
 
 #if defined(_WIN32)

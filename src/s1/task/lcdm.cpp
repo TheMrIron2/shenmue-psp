@@ -1,6 +1,9 @@
 #include "s1/task/lcdm.hpp"
 #include "common/types.hpp"
 #include "common/utility.hpp"
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
 
 #include <bit>
 #include <array>
@@ -122,6 +125,9 @@ const std::uint8_t *ResolveBitmap(LcdmTaskData *lcdm, std::uintptr_t bitmap) {
     if (bitmap >= 0x10000) {
         return reinterpret_cast<const std::uint8_t *>(bitmap);
     }
+    if (bitmap >= sizeof(lcdm->packedEntries) / sizeof(lcdm->packedEntries[0])) {
+        return nullptr;
+    }
     return lcdm->packedEntries[bitmap];
 }
 
@@ -196,7 +202,21 @@ void lcdmInit(std::uintptr_t bitmap) {
     if (!lcdm)
         return;
 
-    const std::uint8_t *source = ResolveBitmap(lcdm, bitmap) + 2;
+    const std::uint8_t *const resolvedBitmap = ResolveBitmap(lcdm, bitmap);
+    if (!resolvedBitmap) {
+#if defined(SHENMUE_HOST_PSP)
+        static std::uint32_t missingBitmapLogCount = 0;
+        if (missingBitmapLogCount < 8) {
+            ++missingBitmapLogCount;
+            psp::BootLog("LCDM: missing bitmap source index_or_ptr=%08x; cleared LCD buffer", static_cast<unsigned>(bitmap));
+        }
+#endif
+        std::memset(lcdm->pixels, 0, sizeof(lcdm->pixels));
+        lcdm->field_018 = 1;
+        return;
+    }
+
+    const std::uint8_t *source = resolvedBitmap + 2;
     std::uint8_t *destination = lcdm->pixels;
     for (std::int32_t index = 0; index < 192; ++index) {
         const std::uint8_t value = *source++;
@@ -378,6 +398,18 @@ std::int64_t LCDM_Init() {
     g_lcdmTaskData = data;
     g_LCDM[0] = task;
     LCDM_APICode();
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t initTraceCount = 0;
+    if (initTraceCount < 4) {
+        ++initTraceCount;
+        const auto *const archive = static_cast<const std::uint8_t *>(data->archive);
+        const std::int32_t entryCount = archive ? read_unaligned<std::int32_t>(archive + 4) : 0;
+        const std::int32_t tableOffset = archive ? read_unaligned<std::int32_t>(archive + 8) : 0;
+        psp::BootLog("LCDM_Init: taskData=%p archive=%p entries=%d tableOffset=%d SHENMUE=%p",
+                     static_cast<void *>(data), static_cast<void *>(data->archive), entryCount, tableOffset,
+                     static_cast<const void *>(data->packedEntries[0]));
+    }
+#endif
     if (!data->archive) {
         LCDM_Shutdown();
         return 0;

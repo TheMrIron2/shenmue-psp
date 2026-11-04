@@ -87,6 +87,7 @@
 #include "s1/screen_space.hpp"
 #include "s1/ui_definition.hpp"
 #include "s1/ui_runtime.hpp"
+#include "common/compat.hpp"
 #include "platform/performance_counter.hpp"
 #include "common/utility.hpp"
 

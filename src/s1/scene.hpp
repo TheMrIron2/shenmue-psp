@@ -17,10 +17,18 @@ struct GameNode {
     std::uint32_t vertexCount;
     std::int32_t materialTexture;
     std::uint32_t field_1c;
-    std::byte reserved_020[1524];
+    // The recovered layout has no fields here. Keep the total size and offsets
+    // stable while storing D3T's world transform with its scene node instead of
+    // allocating a separate host-side map entry for every mesh.
+    Matrix4x4 d3tWorldTransform;
+    std::uint32_t d3tWorldTransformValid;
+    std::byte reserved_064[1456];
 };
 
 static_assert(sizeof(GameNode) == 0x614);
+static_assert(offsetof(GameNode, d3tWorldTransform) == 0x20);
+static_assert(offsetof(GameNode, d3tWorldTransformValid) == 0x60);
+static_assert(offsetof(GameNode, reserved_064) == 0x64);
 
 #pragma pack(push, 4)
 struct SceneEntityTable {

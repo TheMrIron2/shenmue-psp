@@ -43,7 +43,7 @@ static_assert(offsetof(AsyncMipCallbackData, endMip) == 5);
 
 namespace d3t {
 extern std::uint32_t g_pendingMipMapRequestCount;
-inline constexpr std::size_t kMipTextureTableSize = 0x4000;
+inline constexpr std::size_t kMipTextureTableSize = 0x400;
 inline constexpr std::uint32_t kMipTextureTableMask = 0x3fff;
 extern std::array<std::uint64_t, 9> g_mipMapFrameCounters;
 extern bool g_loadTexturesDirectly;

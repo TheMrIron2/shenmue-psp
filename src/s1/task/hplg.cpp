@@ -1,9 +1,15 @@
 #include "auto_test.hpp"
+
+#include <cmath>
+
 #if defined(SHENMUE_STEAM)
 #include "d3t/steam.hpp"
 #endif
 
 #include "s1/task/hplg.hpp"
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
 #include "s1/task/save.hpp"
 #include "s1/d3t/d3t_threads.hpp"
 #include "s1/steam.hpp"
@@ -36,6 +42,12 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+
+#if defined(SHENMUE_HOST_PSP)
+namespace shenmue::s1::ui_runtime_detail {
+void RenderPspFrontendFrame();
+}
+#endif
 
 namespace shenmue::s1 {
 
@@ -506,12 +518,23 @@ void HPLG_SetStorageConnected(bool connected) {
 extern std::int32_t g_pauseStateTemp;
 
 void HLib_mainModule(HLib::TaskData *) {
+#if defined(SHENMUE_HOST_PSP)
+    static bool tracedFirstFrame = false;
+    const bool traceFrame = !tracedFirstFrame;
+    tracedFirstFrame = true;
+    if (traceFrame)
+        psp::BootLog("HLib_mainModule: first frame begin");
+#endif
 #if defined(SHENMUE_STEAM)
     ::shenmue::d3t::RunSteamCallbacks();
 #endif
     g_pauseStateTemp = Shenmue_nPauseState & 2;
     Fog_ApplySpecialSettings();
     BeginSceneFrameSubmission();
+#if defined(SHENMUE_HOST_PSP)
+    if (traceFrame)
+        psp::BootLog("HLib_mainModule: scene submission begun");
+#endif
     if (g_abufferClearPending != 0) {
         ClearEffectABuffer();
         g_abufferClearPending = 0;
@@ -520,6 +543,10 @@ void HLib_mainModule(HLib::TaskData *) {
     DrawEffectCommandStreamDepthPass();
     BeginSceneCompositionSubmission();
     ComposeEffectABuffer();
+#if defined(SHENMUE_HOST_PSP)
+    if (traceFrame)
+        psp::BootLog("HLib_mainModule: depth and composition effects complete");
+#endif
     EFFE_ReplayQueuedEffects(1);
     DrawCharacterShadows();
     EFFE_DrawProjectedShadows();
@@ -527,16 +554,45 @@ void HLib_mainModule(HLib::TaskData *) {
     SetupPPFX(DX11::g_ppD3DDeviceContext);
     EFFE_FinishQueuedEffects();
     FinishSceneFrameSubmission();
+#if defined(SHENMUE_HOST_PSP)
+    if (traceFrame)
+        psp::BootLog("HLib_mainModule: scene frame submission complete");
+#endif
     if (g_nAuthorState == 0x14) {
+#if defined(SHENMUE_HOST_PSP)
+        if (traceFrame)
+            psp::BootLog("HLib_mainModule: author transition begin");
+#endif
         SetNewAuthorGameState(0);
+#if defined(SHENMUE_HOST_PSP)
+        if (traceFrame)
+            psp::BootLog("HLib_mainModule: author transition returned");
+#endif
     }
+#if defined(SHENMUE_HOST_PSP)
+    if (traceFrame)
+        psp::BootLog("HLib_mainModule: camera transition begin");
+#endif
     CAME_HandleRootAuthorTransition(GetCurrentInputType() == InputMode::Vehicle);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceFrame)
+        psp::BootLog("HLib_mainModule: camera transition returned");
+#endif
 #if SHEN_AUTO_TEST_ENABLED && defined(_WIN32)
     const bool captured = auto_test::FinishFrame();
     if (captured)
         d3t_DumpFramePng(auto_test::CapturePath());
 #endif
+#if defined(SHENMUE_HOST_PSP)
+    if (traceFrame)
+        psp::BootLog("HLib_mainModule: present begin");
+    ui_runtime_detail::RenderPspFrontendFrame();
+#endif
     PresentLatestFrame();
+#if defined(SHENMUE_HOST_PSP)
+    if (traceFrame)
+        psp::BootLog("HLib_mainModule: frame presented");
+#endif
 #if SHEN_AUTO_TEST_ENABLED && defined(_WIN32)
     if (captured)
         Shutdown();
@@ -553,6 +609,10 @@ void HLib_mainModule(HLib::TaskData *) {
     d3t::ProcessMessages();
     UpdateInputsFromInputDevices();
     HandleUICallbacks();
+#if defined(SHENMUE_HOST_PSP)
+    if (traceFrame)
+        psp::BootLog("HLib_mainModule: UI callbacks complete");
+#endif
     UpdateRootFrameCounters();
     HLib_UpdateFrameTiming();
     const InputSlot &input = g_inputState.slots[0];

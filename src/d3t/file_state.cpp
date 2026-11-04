@@ -6,7 +6,7 @@
 
 namespace shenmue::d3t {
 
-std::array<FileState, 2048> g_files{};
+std::array<FileState, 256> g_files{};
 
 namespace {
 

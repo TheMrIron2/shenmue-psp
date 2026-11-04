@@ -36,8 +36,14 @@ static_assert(offsetof(D3TTaskRecord, generation) == 0xc28);
 static_assert(offsetof(D3TTaskRecord, result) == 0xc2c);
 static_assert(sizeof(D3TTaskRecord) == 0xc30);
 
+#if defined(SHENMUE_HOST_PSP)
+inline constexpr std::size_t kD3TTaskCapacity = 64;
+#else
+inline constexpr std::size_t kD3TTaskCapacity = 1024;
+#endif
+
 extern std::uint32_t g_invalidTaskHandle;
-extern std::array<D3TTaskRecord, 1024> g_d3tTasks;
+extern std::array<D3TTaskRecord, kD3TTaskCapacity> g_d3tTasks;
 extern std::atomic<std::int32_t> g_d3tTaskCount;
 extern std::atomic<std::int32_t> g_d3tDeferredCompletionCount;
 extern std::atomic<bool> g_d3tThreadsInitialized;

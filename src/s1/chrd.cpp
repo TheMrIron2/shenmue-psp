@@ -19,6 +19,10 @@
 #include "s1/task/telm.hpp"
 #include "common/utility.hpp"
 
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
+
 #include <array>
 #include <bit>
 #include <cmath>
@@ -27,6 +31,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <new>
 #include <span>
 #include <string_view>
 #include <thread>
@@ -213,8 +218,19 @@ class ModelReadBatch {
     }
 
     void Queue(MdlmImageEntry *destination, const char *directory) {
-        const std::int64_t previous = g_TotalSceneFileReadBytes;
-        auto *const request = static_cast<ModelRead *>(AllocateSceneTransient(sizeof(ModelRead)));
+        if (!Reserve(count_ + 1)) {
+#if defined(SHENMUE_HOST_PSP)
+            static bool reportedFailure = false;
+            if (!reportedFailure) {
+                reportedFailure = true;
+                psp::BootLog("CHRD: request table allocation failed image=%s directory=%s count=%u capacity=%u", destination && destination->imageName ? destination->imageName : "<null>",
+                    directory ? directory : "<null>", static_cast<unsigned>(count_), static_cast<unsigned>(capacity_));
+            }
+#endif
+            return;
+        }
+        ModelRead *const request = &first_[count_++];
+        *request = {};
         request->destination = destination;
         std::strcpy(request->directory, directory);
         std::strcpy(request->filename, destination->imageName);
@@ -223,16 +239,20 @@ class ModelReadBatch {
         const std::uint32_t size = exists ? static_cast<std::uint32_t>(OpenFileInternal(request->file->path)) : 0U;
         request->bytes = HLib_AllocHeapMemBlock(size, make_shen_name('M', 'D', 'L', ' '));
         OpenFile(request->file, request->bytes, static_cast<std::int32_t>(size));
-        if (!count_) {
-            first_ = reinterpret_cast<std::byte *>(request);
-            originalOffset_ = previous;
-        }
-        ++count_;
     }
 
     void Publish() {
-        if (!count_)
+        if (!count_) {
+            ReleaseRequestTable();
             return;
+        }
+#if defined(SHENMUE_HOST_PSP)
+        static std::uint32_t publishedBatches = 0;
+        if (publishedBatches < 8) {
+            ++publishedBatches;
+            psp::BootLog("CHRD: publishing model batch count=%u capacity=%u", static_cast<unsigned>(count_), static_cast<unsigned>(capacity_));
+        }
+#endif
         // FBXReader orders completed model publication by directory/name.
         for (std::size_t index = 1; index < count_; ++index) {
             const ModelRead value = At(index);
@@ -258,7 +278,28 @@ class ModelReadBatch {
                     char path[0x100];
                     const int length = std::sprintf(path, "/%s/%s", request.directory, request.filename);
                     std::memcpy(path + length - 3, "fbx", 4);
-                    PackModel *const model = MT5_InitRawModelAndTextures(request.bytes, request.filename, path);
+#if defined(SHENMUE_HOST_PSP)
+                    static std::uint32_t tracedModels = 0;
+                    const bool traceModel = tracedModels < 8;
+                    if (traceModel) {
+                        ++tracedModels;
+                        psp::BootLog("CHRD: raw model begin image=%s path=%s data=%p", request.filename, path, request.bytes);
+                    }
+#endif
+                    PackModel *model = nullptr;
+                    try {
+                        model = MT5_InitRawModelAndTextures(request.bytes, request.filename, path);
+                    } catch (const std::bad_alloc &) {
+#if defined(SHENMUE_HOST_PSP)
+                        psp::BootLog("CHRD: bad_alloc in raw model image=%s path=%s", request.filename, path);
+                        psp::BootLogHeap("CHRD raw model allocation failure");
+#endif
+                        throw;
+                    }
+#if defined(SHENMUE_HOST_PSP)
+                    if (traceModel)
+                        psp::BootLog("CHRD: raw model complete image=%s model=%p", request.filename, static_cast<void *>(model));
+#endif
                     if (model) {
                         Shenmue_FileRead_ALL(reinterpret_cast<std::int64_t>(model->model), path, 0, 0x22);
                         const auto kind = static_cast<std::int16_t>(static_cast<Mt5RuntimeNode *>(model->model)->nodeKind);
@@ -274,22 +315,60 @@ class ModelReadBatch {
             if (pending)
                 std::this_thread::yield();
         } while (pending);
-        g_TotalSceneFileReadBytes = originalOffset_;
-        first_ = nullptr;
-        count_ = 0;
+        ReleaseRequestTable();
     }
 
   private:
+    bool Reserve(std::size_t requested) {
+        if (requested <= capacity_)
+            return true;
+        const std::size_t maxCapacity = static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()) / sizeof(ModelRead);
+        if (requested > maxCapacity)
+            return false;
+        std::size_t nextCapacity = capacity_ ? capacity_ : 16;
+        while (nextCapacity < requested) {
+            if (nextCapacity > maxCapacity / 2) {
+                nextCapacity = requested;
+                break;
+            }
+            nextCapacity *= 2;
+        }
+        auto *const replacement = static_cast<ModelRead *>(HLib_AllocHeapMemBlock(static_cast<std::int64_t>(nextCapacity * sizeof(ModelRead)), make_shen_name('M', 'R', 'E', 'Q')));
+        if (!replacement)
+            return false;
+        const std::size_t oldCount = count_;
+        if (count_)
+            std::memcpy(replacement, first_, count_ * sizeof(ModelRead));
+        if (first_)
+            HLib_FreeTaskData(reinterpret_cast<HLib::TaskData *>(first_), 0);
+        first_ = replacement;
+        count_ = oldCount;
+        capacity_ = nextCapacity;
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("CHRD: model request table grew capacity=%u bytes=%u", static_cast<unsigned>(capacity_),
+            static_cast<unsigned>(capacity_ * sizeof(ModelRead)));
+#endif
+        return true;
+    }
+
+    void ReleaseRequestTable() {
+        if (first_)
+            HLib_FreeTaskData(reinterpret_cast<HLib::TaskData *>(first_), 0);
+        first_ = nullptr;
+        capacity_ = 0;
+        count_ = 0;
+    }
+
     ModelRead &At(std::size_t index) {
-        return *reinterpret_cast<ModelRead *>(first_ + index * (sizeof(ModelRead) + 4));
+        return first_[index];
     }
     static bool ComesAfter(const ModelRead &left, const ModelRead &right) {
         const int directoryOrder = CompareNames(left.directory, right.directory);
         return directoryOrder > 0 || (!directoryOrder && CompareNames(left.filename, right.filename) > 0);
     }
-    std::byte *first_ = nullptr;
+    ModelRead *first_ = nullptr;
     std::size_t count_ = 0;
-    std::int64_t originalOffset_ = 0;
+    std::size_t capacity_ = 0;
 };
 
 bool MatchesEntry(const SceneTokenArgument &argument, std::uint32_t entryPoint) {

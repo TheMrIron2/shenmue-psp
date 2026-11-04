@@ -350,6 +350,7 @@ add_library(shenmue1_game STATIC
   src/s1/ui_messages.cpp
   src/s1/ui_training.cpp
   src/s1/ui_frontend.cpp
+  src/s1/dreamcast_frontend.cpp
   src/s1/ui_grid.cpp
   src/s1/ui_help.cpp
   src/s1/ui_credits.cpp

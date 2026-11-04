@@ -1,4 +1,5 @@
 #include "auto_test.hpp"
+#include "common/archive_data.hpp"
 #if defined(SHENMUE_STEAM)
 #include "d3t/steam.hpp"
 #endif
@@ -26,6 +27,9 @@
 #include "s1/scene_memory.hpp"
 #include "s1/texture_cache.hpp"
 #include "s1/window.hpp"
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
 
 #include <array>
 #include <atomic>
@@ -79,7 +83,12 @@ std::int32_t g_sceneInitFlag730 = 0;
 std::int32_t g_sceneInitFlag71c = 0;
 std::int32_t g_sceneInitFlag718 = 0;
 std::int32_t g_sceneInitFlag72c = 0;
+#if defined(SHENMUE_HOST_PSP)
+// Scaled global-memory multiplier; the PC uses 7x (18 MB). Keep it small on PSP.
+std::uint32_t g_memAlignment = 1;
+#else
 std::uint32_t g_memAlignment = 7;
+#endif
 void *g_globalMemory = nullptr;
 std::uint32_t g_globalMemorySize = 0;
 SteamStorageCallback g_steamSaveFunction = nullptr;
@@ -120,7 +129,7 @@ void InitSceneDataMemory_0() {
         node.state = 0;
         node.textureIdLow = 0;
         node.textureIdHigh = 0;
-        node.next = index + 1 < 640 ? &g_pvrTaskDataNodes[index + 1] : g_pvrTaskDataNodes + 640;
+        node.next = index + 1 < 640 ? &g_pvrTaskDataNodes[index + 1] : nullptr;
     }
     g_pvrSceneState = 0;
     g_freePvrTaskData = g_pvrTaskDataNodes;
@@ -154,6 +163,17 @@ std::int32_t PVR_FindOrAllocateSurface(std::int32_t textureIdLow, std::int32_t t
     if (!node) {
         return -1;
     }
+    const std::uintptr_t nodeAddress = reinterpret_cast<std::uintptr_t>(node);
+    const std::uintptr_t nodesBegin = reinterpret_cast<std::uintptr_t>(g_pvrTaskDataNodes);
+    const std::uintptr_t nodesEnd = nodesBegin + sizeof(g_pvrTaskDataNodes);
+    if (nodeAddress < nodesBegin || nodeAddress >= nodesEnd || (nodeAddress - nodesBegin) % sizeof(PvrTaskDataNode) != 0) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("PVR_FindOrAllocateSurface: invalid free-list node=%p ids=%08x:%08x", static_cast<void *>(node),
+                     static_cast<unsigned>(textureIdHigh), static_cast<unsigned>(textureIdLow));
+#endif
+        g_freePvrTaskData = nullptr;
+        return -1;
+    }
     g_freePvrTaskData = node->next;
     node->next = activeList;
     activeList = node;
@@ -176,18 +196,66 @@ std::int32_t PVR_FindSurface(std::int32_t textureIdLow, std::int32_t textureIdHi
 
 std::int64_t PVR_FreeAllocatedSurfaceByIndex(std::int32_t surfaceIndex) {
     PvrTaskDataNode *&activeList = g_texnTextureCacheBank[0] ? g_activePvrTaskData : g_pendingPvrTaskData;
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t traceCount = 0;
+    const bool traceSurfaceRelease = traceCount++ < 16;
+    if (traceSurfaceRelease)
+        psp::BootLog("PVR_Free: begin index=%d list=%p free=%p", surfaceIndex, static_cast<void *>(activeList),
+                     static_cast<void *>(g_freePvrTaskData));
+#endif
     PvrTaskDataNode *previous = nullptr;
     PvrTaskDataNode *node = activeList;
-    while (node && node->taskDataIndex != surfaceIndex) {
+    while (node) {
+#if defined(SHENMUE_HOST_PSP)
+        const std::uintptr_t nodeAddress = reinterpret_cast<std::uintptr_t>(node);
+        const std::uintptr_t nodesBegin = reinterpret_cast<std::uintptr_t>(g_pvrTaskDataNodes);
+        const std::uintptr_t nodesEnd = nodesBegin + sizeof(g_pvrTaskDataNodes);
+        if (nodeAddress < nodesBegin || nodeAddress >= nodesEnd || (nodeAddress - nodesBegin) % sizeof(PvrTaskDataNode) != 0) {
+            psp::BootLog("PVR_Free: invalid list node=%p index=%d", static_cast<void *>(node), surfaceIndex);
+            return -1;
+        }
+        if (traceSurfaceRelease)
+            psp::BootLog("PVR_Free: scan node=%p nodeIndex=%d state=%d next=%p", static_cast<void *>(node),
+                         static_cast<int>(node->taskDataIndex), static_cast<int>(node->state), static_cast<void *>(node->next));
+#endif
+        if (node->taskDataIndex == surfaceIndex)
+            break;
         previous = node;
         node = node->next;
     }
+#if defined(SHENMUE_HOST_PSP)
+    if (node) {
+        const std::uintptr_t nodeAddress = reinterpret_cast<std::uintptr_t>(node);
+        const std::uintptr_t nodesBegin = reinterpret_cast<std::uintptr_t>(g_pvrTaskDataNodes);
+        const std::uintptr_t nodesEnd = nodesBegin + sizeof(g_pvrTaskDataNodes);
+        if (nodeAddress < nodesBegin || nodeAddress >= nodesEnd || (nodeAddress - nodesBegin) % sizeof(PvrTaskDataNode) != 0) {
+            psp::BootLog("PVR_Free: matched invalid node=%p index=%d", static_cast<void *>(node), surfaceIndex);
+            return -1;
+        }
+        if (traceSurfaceRelease)
+            psp::BootLog("PVR_Free: matched node=%p index=%d state=%d previous=%p next=%p", static_cast<void *>(node),
+                         static_cast<int>(node->taskDataIndex), static_cast<int>(node->state), static_cast<void *>(previous),
+                         static_cast<void *>(node->next));
+    }
+#endif
     if (!node || node->taskDataIndex < 0) {
+#if defined(SHENMUE_HOST_PSP)
+        if (traceSurfaceRelease)
+            psp::BootLog("PVR_Free: no matching active node");
+#endif
         return -1;
     }
 
     if (--node->state <= 0) {
+#if defined(SHENMUE_HOST_PSP)
+        if (traceSurfaceRelease)
+            psp::BootLog("PVR_Free: init surface index=%d", static_cast<int>(node->taskDataIndex));
+#endif
         InitPVRTaskData(node->taskDataIndex);
+#if defined(SHENMUE_HOST_PSP)
+        if (traceSurfaceRelease)
+            psp::BootLog("PVR_Free: surface init returned");
+#endif
         if (previous) {
             previous->next = node->next;
         } else {
@@ -199,6 +267,10 @@ std::int64_t PVR_FreeAllocatedSurfaceByIndex(std::int32_t surfaceIndex) {
         node->textureIdLow = 0;
         node->textureIdHigh = 0;
     }
+#if defined(SHENMUE_HOST_PSP)
+    if (traceSurfaceRelease)
+        psp::BootLog("PVR_Free: complete index=%d", surfaceIndex);
+#endif
     return 0;
 }
 
@@ -242,17 +314,32 @@ bool IsMainRenderHandleBusy() {
 
 int Initialization(int, char **) {
 
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("Initialization: begin");
+#endif
     const SteamAppInfo appInfo{758330, 0, "Coconut", "MD22_112855"};
     if (!Steam_InitApp(&appInfo)) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("Initialization: Steam_InitApp failed");
+#endif
         return 0;
     }
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("Initialization: Steam_InitApp ok");
+#endif
     g_steamInitialized = true;
 
     smallTextures = 0;
 
     std::memset(MainMemory.data(), 0, MainMemory.size());
     HLib_Malloc();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("Initialization: HLib_Malloc done; Initialization_2 begin");
+#endif
     Initialization_2();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("Initialization: Initialization_2 returned");
+#endif
     return 1;
 }
 
@@ -299,6 +386,14 @@ std::int64_t InitShenmue(GameConfig *config) {
     config->display.width = 640;
     config->display.height = 480;
     DX11_D3D11CreateDeviceAndSwapChain(screenResolution);
+#elif defined(SHENMUE_HOST_PSP)
+    // Native PSP display; avoids a 0x0 projection (g_originalScreen* stay 0
+    // otherwise because the Windows swap-chain init is skipped).
+    config->display.width = 480;
+    config->display.height = 272;
+    config->display.flags = 0;
+    g_originalScreenWidth = 480;
+    g_originalScreenHeight = 272;
 #else
     static_cast<void>(config);
 #endif
@@ -306,9 +401,15 @@ std::int64_t InitShenmue(GameConfig *config) {
     std::memset(&d3t::g_d3tModels, 0, sizeof(d3t::g_d3tModels));
     d3t::CreateTemp2x2Textures();
     SetupGlobalRenderBuffers();
+#if defined(SHENMUE_HOST_PSP)
+    g_largeDataBufferSize = 0x100000; // 1 MB (PC uses 8 MB)
+#else
     g_largeDataBufferSize = 0x800000;
+#endif
 #if defined(_WIN32)
     g_largeDataBuffer = _aligned_malloc(g_largeDataBufferSize, 16);
+#elif defined(SHENMUE_HOST_PSP)
+    g_largeDataBuffer = ::aligned_alloc(16, g_largeDataBufferSize);
 #else
     g_largeDataBuffer = std::aligned_alloc(16, g_largeDataBufferSize);
 #endif
@@ -327,7 +428,9 @@ std::int64_t InitShenmue(GameConfig *config) {
 #endif
     GenerateMipsAndUpdateResourcesForDirectX();
     g_dxPipelineLock = 0;
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(SHENMUE_HOST_PSP)
+    // The render-state code dereferences this context; on PSP it points at the
+    // null-renderer's synthetic D3TDeviceContext.
     DX11::g_ppD3DDeviceContext = d3t_DXGetPipelineContext(0);
 #endif
     InitGeneralTextureResources();
@@ -335,12 +438,22 @@ std::int64_t InitShenmue(GameConfig *config) {
 }
 
 std::int64_t ShenmueInit(GameConfig *config) {
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("ShenmueInit: begin");
+    psp::BootLogHeap("ShenmueInit entry");
+#endif
     d3t_CreateThreads();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLogHeap("after D3T threads");
+#endif
     if (!g_globalMemory) {
         constexpr std::size_t kGlobalMemorySize = 0x280000;
         g_globalMemory = std::malloc(kGlobalMemorySize * static_cast<std::size_t>(g_memAlignment));
         g_globalMemorySize = static_cast<std::uint32_t>(kGlobalMemorySize);
     }
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLogHeap("after global scratch pool");
+#endif
 
     d3t::SetupAchievements();
     d3t::InitializeSteamAPI();
@@ -350,14 +463,29 @@ std::int64_t ShenmueInit(GameConfig *config) {
     d3t_InitializeOodleZLib();
 #if defined(SHENMUE_STEAM)
     const std::filesystem::path gameRoot = ::shenmue::d3t::GetExecutableDirectory();
+#elif defined(SHENMUE_USE_DC_ASSETS)
+    // Dreamcast disc asset tree (extracted by tools/dc/extract.py). Override
+    // the location with SHEN_ROOT; the default is PSPLink's host filesystem.
+    const char *const shenRoot = std::getenv("SHEN_ROOT");
+    const std::filesystem::path gameRoot = shenRoot && *shenRoot ? std::filesystem::path(shenRoot)
+                                                                  : std::filesystem::path("host0:/DISC1/extracted");
 #else
     const char *const shenRoot = std::getenv("SHEN_ROOT");
     const std::filesystem::path gameRoot = shenRoot && *shenRoot ? std::filesystem::path(shenRoot) / "sm1" : std::filesystem::current_path();
 #endif
     const std::string gameRootString = gameRoot.string();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("ShenmueInit: archive root=%s", gameRootString.c_str());
+#endif
     const D3TArchiveDirectory directory{gameRootString.c_str(), "dx11", 2, 0, 0, 0, {}};
     d3t_ReadArchives(&directory);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("ShenmueInit: archive read returned (hasArchives=%d)", archive_data::ArchiveData_HasArchives());
+    psp::BootLogHeap("after archive index");
+#endif
+#if !defined(SHENMUE_USE_DC_ASSETS)
     d3t_ReadAssetRemapping();
+#endif
 
     g_steamSaveFunction = SteamSaveFn;
     g_activeSaveData = nullptr;
@@ -373,10 +501,16 @@ std::int64_t ShenmueInit(GameConfig *config) {
     InitializeD3TSettings();
     ReadConfigFromSave();
     SettingsFileParser();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLogHeap("after settings");
+#endif
     g_ClearColour = 0xff000000;
     g_initializationTemporaryClearColour = 0;
 
     InitShenmue(config);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLogHeap("after InitShenmue graphics init");
+#endif
     MatrixStack_InitTransformMatrixStack(config->matrices, config->matrixCount);
     InitRenderer();
     SetAlphaRenderFlags();

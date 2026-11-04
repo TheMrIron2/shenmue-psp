@@ -3,6 +3,10 @@
 #include "s1/hlib.hpp"
 #include "s1/input.hpp"
 
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
+
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -39,6 +43,16 @@ void HLTaskFunc_KeyRepeat(HLib::TaskData *taskData) {
     updateRepeat(held, pressed, 0x0040, data->repeatCountdown[4], repeated);
     updateRepeat(held, pressed, 0x0080, data->repeatCountdown[5], repeated);
     updateRepeat(held, pressed, 0x0400, data->repeatCountdown[6], repeated);
+
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t directionTraceCount = 0;
+    if (data->inputIndex == 0 && (held & 0xc000U) != 0 && directionTraceCount < 64) {
+        ++directionTraceCount;
+        psp::BootLog("KREP: sample=%u held=%04x pressed=%04x repeated=%04x rightCountdown=%d leftCountdown=%d",
+                     static_cast<unsigned>(directionTraceCount), static_cast<unsigned>(held), static_cast<unsigned>(pressed),
+                     static_cast<unsigned>(repeated), data->repeatCountdown[3], data->repeatCountdown[2]);
+    }
+#endif
 
     if ((held & 0x0200) != 0) {
         if ((pressed & 0x0200) != 0) {

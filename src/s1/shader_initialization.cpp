@@ -13,6 +13,10 @@
 #include "s1/nuklear_integration.hpp"
 #include "s1/simple_shader.hpp"
 
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -163,6 +167,15 @@ std::int64_t ComposeEffectABuffer() {
 std::int32_t g_bHasSetupShaders = 0;
 
 std::int64_t LoadShaders() {
+#if defined(SHENMUE_HOST_PSP)
+    // The PSP renderer does not consume the PC HLSL/D3D stack, but the shared
+    // frontend still needs its element callbacks registered before the task
+    // loop starts invoking UI callbacks.
+    const char *const uiInitResult = UI_Elements_Init();
+    g_bHasSetupShaders = 1;
+    psp::BootLog("LoadShaders: skipped PC shaders; UI callbacks initialized=%s", uiInitResult ? uiInitResult : "(null)");
+    return 0;
+#else
     g_activeRenderHandle = d3t_AllocateRenderHandle();
 
     CreateFVFLayouts();
@@ -185,6 +198,7 @@ std::int64_t LoadShaders() {
     AssignShaderReferences_0();
     g_bHasSetupShaders = 1;
     return ClearEffectABuffer();
+#endif
 }
 
 } // namespace shenmue::s1

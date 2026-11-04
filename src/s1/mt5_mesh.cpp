@@ -17,9 +17,16 @@ namespace shenmue::s1 {
 
 
 
+// PC-sized MT5 scratch (262144 vertices = 16 MB per matrix array). The PSP uses
+// a much smaller per-frame batch capacity to fit its memory budget.
+#if defined(SHENMUE_HOST_PSP)
+constexpr std::size_t kMaxVertices = 8192;
+constexpr std::size_t kMaxStripsPerMaterial = 128;
+#else
 constexpr std::size_t kMaxVertices = 262144;
-constexpr std::size_t kMaxMaterials = 128;
 constexpr std::size_t kMaxStripsPerMaterial = 2000;
+#endif
+constexpr std::size_t kMaxMaterials = 128;
 thread_local const std::byte *g_mt5VertexDataOverride{};
 
 const void *MT5_SetVertexDataOverride(const void *vertices) {

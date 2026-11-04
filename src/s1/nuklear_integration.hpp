@@ -38,6 +38,7 @@ GameLanguage GetCurrentLanguageId(GameLanguage requestedLanguage);
 std::int64_t SelectAppropriateFontDefinition(GameLanguage language, std::uint32_t renderHandle);
 std::uint32_t LoadNuklearBuffer(std::uint32_t renderHandle);
 void CreateDXTextureForNuklearBuffer();
+const char *UI_Elements_Init();
 namespace d3t {
 void InitNuklearTexture2D();
 } // namespace d3t

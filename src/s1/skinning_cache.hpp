@@ -69,6 +69,18 @@ struct alignas(16) SkinningCacheStorage {
     std::array<std::uint32_t, 128> generations;
 };
 
+// The transient skinning work cache holds large per-character work buffers
+// (0x24f50 bytes each). The PC build keeps 128; the PSP keeps far fewer to fit
+// its memory budget. Handle encoding reserves `kWorkSlotBits` low bits for the
+// slot index, so allocation and lookup must agree.
+#if defined(SHENMUE_HOST_PSP)
+inline constexpr std::uint32_t kWorkSlotBits = 2; // 4 slots
+#else
+inline constexpr std::uint32_t kWorkSlotBits = 7; // 128 slots
+#endif
+inline constexpr std::uint32_t kWorkSlotCount = 1U << kWorkSlotBits;
+inline constexpr std::uint32_t kWorkSlotMask = kWorkSlotCount - 1U;
+
 struct SkinningTexSortBatch {
     std::byte *records;
     std::uint32_t recordCount;
@@ -115,8 +127,8 @@ struct FacialExpressionRequest {
 constexpr std::size_t kSkinningWorkCacheEntrySize = 0x24f50;
 
 struct alignas(16) SkinningWorkCacheStorage {
-    std::array<std::array<std::byte, kSkinningWorkCacheEntrySize>, 128> entries;
-    std::array<std::uint32_t, 128> generations;
+    std::array<std::array<std::byte, kSkinningWorkCacheEntrySize>, kWorkSlotCount> entries;
+    std::array<std::uint32_t, kWorkSlotCount> generations;
 };
 
 static_assert(offsetof(SkinningCacheStorage, generations) == 0x8800);

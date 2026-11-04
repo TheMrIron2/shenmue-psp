@@ -22,6 +22,10 @@
 #include "s1/timing.hpp"
 #include "d3t/threads.hpp"
 #include "s1/d3t/settings.hpp"
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#include <malloc.h>
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -2041,6 +2045,11 @@ void ReadAndExecuteAicaForBGM(const char *directory, const char *filename, std::
 void sondLoadSndFromDirIntoBank(std::int32_t sceneId, std::int32_t bank, const char *filename) {
     if (!filename || bank < 0 || bank > 15)
         return;
+#if defined(SHENMUE_PSP_SILENT_AUDIO)
+    // The PSP frontend currently has no software audio output or bank-memory
+    // budget. Keep sound requests non-blocking until that backend is added.
+    return;
+#endif
     EnsureAicaMemory();
 
     char selectedFilename[16]{};
@@ -2129,6 +2138,10 @@ std::int32_t SND_SelectFreeWeird(std::int32_t id) {
 }
 
 void SND_LoadSND(const std::array<const char *, 8> &filenames) {
+#if defined(SHENMUE_PSP_SILENT_AUDIO)
+    (void)filenames;
+    return;
+#endif
     for (std::int32_t bank = 7; bank >= 0; --bank) {
         const char *const filename = filenames[static_cast<std::size_t>(bank)];
         bool changed = false;
@@ -3885,36 +3898,98 @@ void AudioRender() {
 }
 
 std::int32_t InitAICAMemory() {
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("AICA: heap query begin");
+    const struct mallinfo heapBefore = mallinfo();
+    psp::BootLog("AICA: heap before arena=%u used=%u free=%u top=%u", static_cast<unsigned>(heapBefore.arena),
+                 static_cast<unsigned>(heapBefore.uordblks), static_cast<unsigned>(heapBefore.fordblks),
+                 static_cast<unsigned>(heapBefore.keepcost));
+#endif
     InitializeAicaMemory();
     g_aicaMemory->alignedAudioRam = static_cast<std::uint8_t *>(std::malloc(0x1f00000));
-    if (!g_aicaMemory->alignedAudioRam)
+#if defined(SHENMUE_HOST_PSP)
+    const struct mallinfo heapAfter = mallinfo();
+    psp::BootLog("AICA: RAM allocation=%p bytes=%u heap-free=%u heap-top=%u", g_aicaMemory->alignedAudioRam,
+                 0x1f00000U, static_cast<unsigned>(heapAfter.fordblks), static_cast<unsigned>(heapAfter.keepcost));
+#endif
+    if (!g_aicaMemory->alignedAudioRam) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("AICA: RAM allocation failed");
+#endif
         throw std::bad_alloc();
+    }
     g_aicaMemory->audioRamSize = 0x1f00000;
     const std::uintptr_t base = (reinterpret_cast<std::uintptr_t>(g_aicaMemory->alignedAudioRam) + 31U) & ~std::uintptr_t{31};
     g_aicaMemory->bankRegionBase[0] = reinterpret_cast<std::uint8_t *>(base);
     g_audioWorkerStop.store(false, std::memory_order_release);
-    if (d3t::g_workerThreadCount > 2)
+    if (d3t::g_workerThreadCount > 2) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("AICA: register audio callback");
+#endif
         d3t::d3t_SetAudioCallback(AudioRender);
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("AICA: audio callback registered");
+#endif
+    }
     return 0;
 }
 
 void InitializeAicaForNotebook() {
-    if (g_bIsAICAInitialized)
+    if (g_bIsAICAInitialized) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("AICA: already initialized");
+#endif
         return;
+    }
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("AICA: notebook initialization begin");
+#endif
+#if defined(SHENMUE_PSP_SILENT_AUDIO)
     {
         std::lock_guard lock(g_aicaCommandMutex);
-        InitializeXAudio();
+        InitializeAicaMemory();
+    }
+    for (std::int32_t bank = 7; bank >= 0; --bank)
+        g_soundTable[bank][0] = 0;
+    g_aicaFrameTimer = 0;
+    g_aicaNeedsBankCleanup[0] = 0;
+    g_sfxVolume = g_applicationSettings.savedSfxVolume;
+    g_musicVolume = g_applicationSettings.savedMusicVolume;
+    g_bIsAICAInitialized = true;
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("AICA: silent PSP mode ready; skipped host output, RAM, and system1.snd");
+#endif
+    return;
+#else
+    {
+        std::lock_guard lock(g_aicaCommandMutex);
+        const bool outputReady = InitializeXAudio();
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("AICA: host output ready=%d", outputReady);
+#endif
         InitAICAMemory();
     }
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("AICA: RAM initialized");
+#endif
     for (std::int32_t bank = 7; bank >= 0; --bank)
         g_soundTable[bank][0] = 0;
     g_aicaFrameTimer = 0;
     g_aicaNeedsBankCleanup[0] = 0;
     {
         std::lock_guard lock(g_aicaCommandMutex);
-        FinishInitializingAICAMemory();
+        const std::int32_t result = FinishInitializingAICAMemory();
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("AICA: bank layout result=%d", result);
+#endif
     }
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("AICA: load system1.snd begin");
+#endif
     sondLoadSndFromDirIntoBank(-1, 0, "system1.snd");
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("AICA: load system1.snd returned");
+#endif
     shenExecuteAICACommand(0xa8, 0, 0);
     HLib_FreeTaskData(static_cast<HLib::TaskData *>(HLib_AllocHeapMemBlock(0x4000, SHEN_NAME(BROM))), 0);
     HLib_FreeTaskData(static_cast<HLib::TaskData *>(HLib_AllocHeapMemBlock(0x4000, SHEN_NAME(BROM))), 0);
@@ -3927,6 +4002,7 @@ void InitializeAicaForNotebook() {
         SetVolumeForAicaBank(g_sfxVolume, bank);
     }
     g_musicVolume = g_applicationSettings.savedMusicVolume;
+#endif
 }
 
 void SOND_Callback(HLib::TaskData *) {

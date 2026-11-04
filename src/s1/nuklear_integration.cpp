@@ -58,7 +58,7 @@ static_assert(offsetof(FontLoadRequest, renderHandle) == 2);
 static_assert(offsetof(FontLoadRequest, language) == 6);
 static_assert(sizeof(FontLoadRequest) == 80);
 
-std::array<FontLoadRequest, 8192> g_fontLoadRequests{};
+std::array<FontLoadRequest, 512> g_fontLoadRequests{};
 std::atomic<std::uint16_t> g_fontLoadRequestIndex{0};
 
 

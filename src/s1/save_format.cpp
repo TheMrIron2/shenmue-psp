@@ -833,7 +833,7 @@ bool FlushFileToDisk(const std::filesystem::path &path) noexcept {
 }
 
 void SyncParentDirectory(const std::filesystem::path &destination) noexcept {
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(SHENMUE_HOST_PSP)
     const std::filesystem::path parent = destination.parent_path().empty() ? std::filesystem::path(".") : destination.parent_path();
     const int directory = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY);
     if (directory < 0)

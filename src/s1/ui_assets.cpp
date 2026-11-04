@@ -1,5 +1,9 @@
 #include "s1/ui_internal.hpp"
 
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
+
 namespace shenmue::s1::ui_runtime_detail {
 
 
@@ -47,8 +51,15 @@ void UI_ResolveLabelScaleVars(UIDefinition &definition) {
     }
 }
 
-void UIFileLoaded(void *data, std::uint32_t contentHandle, void *loadedData, std::uint64_t loadedSize, const char *) {
+void UIFileLoaded(void *data, std::uint32_t contentHandle, void *loadedData, std::uint64_t loadedSize, const char *path) {
     auto *const element = static_cast<UIBaseRuntime *>(data);
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t traceCount = 0;
+    const bool traceFile = traceCount++ < 24;
+    if (traceFile)
+        psp::BootLog("UIFileLoaded: path=%s bytes=%u data=%p element=%p", path ? path : "(null)", static_cast<unsigned>(loadedSize),
+                     loadedData, static_cast<void *>(element));
+#endif
     if (element && element->index >= 0 && element->index < 80 && loadedData && loadedSize != 0) {
         const auto *const first = static_cast<const std::byte *>(loadedData);
         g_uiDefinitions[static_cast<std::size_t>(element->index)].assign(first, first + loadedSize);
@@ -70,7 +81,14 @@ std::uint32_t OpenUIFile(const char *path, UIBaseRuntime &element) {
         0,
         {},
     };
-    return static_cast<std::uint32_t>(PushShaderLoadToThreadQueue(&task));
+    const std::uint32_t handle = static_cast<std::uint32_t>(PushShaderLoadToThreadQueue(&task));
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t traceCount = 0;
+    if (traceCount++ < 24)
+        psp::BootLog("OpenUIFile: path=%s handle=%08x element=%p", path ? path : "(null)", static_cast<unsigned>(handle),
+                     static_cast<void *>(&element));
+#endif
+    return handle;
 }
 
 void UILegacyFileLoaded(void *data, std::uint32_t contentHandle, void *loadedData, std::uint64_t loadedSize, const char *) {
@@ -127,6 +145,11 @@ std::uint32_t LoadPresentationDefinition(std::int32_t index, const char *path) {
         element.someFlag3 = 1;
         std::snprintf(element.uiConfigFilepath, sizeof(element.uiConfigFilepath), "%s", path);
         const std::uint32_t handle = OpenUIFile(path, element);
+        if (static_cast<std::int32_t>(handle) < 0) {
+            element.setup = 0;
+            element.config.init = 0;
+            return 0;
+        }
         element.config.screenWidth = static_cast<std::int16_t>(handle);
         element.config.screenHeight = static_cast<std::int16_t>(handle >> 16U);
         element.config.init = 1;

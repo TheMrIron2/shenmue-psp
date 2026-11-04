@@ -1,6 +1,17 @@
 #include "auto_test.hpp"
 #include "s1/ui_internal.hpp"
 
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#include "psp/psp_renderer.hpp"
+#include "psp/frontend_renderer.hpp"
+#include "s1/dreamcast_frontend.hpp"
+#include "s1/file_loader.hpp"
+#include "s1/hlib.hpp"
+#include "s1/texture_loader.hpp"
+#include <vector>
+#endif
+
 namespace shenmue::s1::ui_runtime_detail {
 std::uint64_t currentNanoseconds();
 
@@ -227,34 +238,353 @@ void setSplashState(std::int32_t state) {
     g_splashStateStart = currentNanoseconds();
 }
 
+#if defined(SHENMUE_HOST_PSP)
+namespace {
+
+OwnedSpriteSet<16> g_pspOptionsSpriteSet{};
+bool g_pspOptionsLoadLogged = false;
+bool g_pspMenuFontLoadAttempted = false;
+std::int32_t g_pspMenuFontSurface = -1;
+std::uint32_t g_pspMenuFontTexture = 0;
+std::int32_t g_pspOptionsSelectedTab = 0;
+
+constexpr float kPspFrontendWidth = 480.0f;
+constexpr float kPspFrontendHeight = 272.0f;
+constexpr float kDreamcastCanvasWidth = 640.0f;
+constexpr float kDreamcastCanvasHeight = 480.0f;
+constexpr float kDreamcastScale = kPspFrontendHeight / kDreamcastCanvasHeight;
+constexpr float kDreamcastViewportWidth = kDreamcastCanvasWidth * kDreamcastScale;
+constexpr float kDreamcastViewportLeft = (kPspFrontendWidth - kDreamcastViewportWidth) * 0.5f;
+
+bool EnsurePspOptionsSprites() {
+    const bool loaded = LoadSpriteSet(g_pspOptionsSpriteSet, "title", "OPTION1.SPR", SHEN_NAME(OPT1), true, 512);
+    if (!g_pspOptionsLoadLogged) {
+        g_pspOptionsLoadLogged = true;
+        psp::BootLog("PSP frontend: OPTION1.SPR loaded=%d surfaces=%u", loaded ? 1 : 0,
+                     static_cast<unsigned>(g_pspOptionsSpriteSet.count));
+    }
+    return loaded;
+}
+
+template <std::size_t Capacity>
+void QueueSpriteByName(const OwnedSpriteSet<Capacity> &set, const char *name, float x, float y, float width, float height,
+    std::uint32_t colour = 0xffffffffU) {
+    if (const OwnedSpriteAsset *const asset = FindSpriteAssetByName(set, name))
+        psp::QueueTexturedTextureQuad(asset->textureHandle, x, y, width, height, colour);
+}
+
+void QueueDreamcastSprite(std::size_t assetIndex, float x, float y, float width, float height, std::uint32_t colour = 0xffffffffU) {
+    // Legacy Options landing still uses these three controller symbols.
+    constexpr std::array<std::size_t, 8> indices{12, 13, 14, 15, 16, 17, 18, 19};
+    if (assetIndex >= indices.size())
+        return;
+    psp::QueueTexturedTextureQuad(psp::frontend::TextureHandle(indices[assetIndex]),
+                                  kDreamcastViewportLeft + x * kDreamcastScale, y * kDreamcastScale,
+                                  width * kDreamcastScale, height * kDreamcastScale, colour);
+}
+
+void QueuePspOptionsSprite(const char *name, float x, float y, float width, float height, std::uint32_t colour = 0xffffffffU) {
+    if (const OwnedSpriteAsset *const asset = FindSpriteAssetByName(g_pspOptionsSpriteSet, name))
+        psp::QueueTexturedTextureQuad(asset->textureHandle, kDreamcastViewportLeft + x * kDreamcastScale, y * kDreamcastScale,
+                                      width * kDreamcastScale, height * kDreamcastScale, colour);
+}
+
+void EnsurePspMenuFont() {
+    if (g_pspMenuFontLoadAttempted)
+        return;
+    g_pspMenuFontLoadAttempted = true;
+
+    const std::uint64_t pvrSize = shenOpenFile("FONT", "ASCII.PVR");
+    if (pvrSize == 0 || pvrSize > 1024U * 1024U) {
+        psp::BootLog("PSP frontend: Dreamcast ASCII.PVR missing or invalid size=%u", static_cast<unsigned>(pvrSize));
+        return;
+    }
+    void *const pvrFile = ReadFile("FONT", "ASCII.PVR", SHEN_NAME(PFNT));
+    if (!pvrFile) {
+        psp::BootLog("PSP frontend: failed to read Dreamcast FONT/ASCII.PVR");
+        return;
+    }
+
+    auto *const texn = static_cast<std::byte *>(HLib_AllocHeapMemBlock(0x1cU + pvrSize, SHEN_NAME(PFNT)));
+    if (!texn) {
+        HLib_FreeTaskData(static_cast<HLib::TaskData *>(pvrFile), 0);
+        psp::BootLog("PSP frontend: ASCII.PVR staging allocation failed");
+        return;
+    }
+    std::memset(texn, 0, 0x1cU);
+    constexpr std::uint32_t texnMagic = 0x4e584554U;
+    constexpr std::int32_t textureIdLow = SHEN_NAME(ASCI);
+    constexpr std::int32_t textureIdHigh = SHEN_NAME(PFNT);
+    std::memcpy(texn, &texnMagic, sizeof(texnMagic));
+    std::memcpy(texn + 8, &textureIdLow, sizeof(textureIdLow));
+    std::memcpy(texn + 12, &textureIdHigh, sizeof(textureIdHigh));
+    std::memcpy(texn + 0x1c, pvrFile, static_cast<std::size_t>(pvrSize));
+    HLib_FreeTaskData(static_cast<HLib::TaskData *>(pvrFile), 0);
+
+    g_pspMenuFontSurface = LoadTEXN(texn, true, 128);
+    HLib_FreeTaskData(reinterpret_cast<HLib::TaskData *>(texn), 0);
+    if (g_pspMenuFontSurface >= 0)
+        g_pspMenuFontTexture = GetPVRSurfaceTextureHandle(g_pspMenuFontSurface);
+    if (!g_pspMenuFontTexture) {
+        if (g_pspMenuFontSurface >= 0)
+            PVR_FreeAllocatedSurfaceByIndex(g_pspMenuFontSurface);
+        g_pspMenuFontSurface = -1;
+        psp::BootLog("PSP frontend: Dreamcast ASCII.PVR texture creation failed");
+        return;
+    }
+    psp::BootLog("PSP frontend: loaded Dreamcast ASCII.PVR surface=%d texture=%08x", g_pspMenuFontSurface,
+                 static_cast<unsigned>(g_pspMenuFontTexture));
+}
+
+void QueuePspMenuTextLayer(const char *text, float centerX, float topY, float scaleX, float scaleY, std::uint32_t colour) {
+    if (!text || !*text || !g_pspMenuFontTexture)
+        return;
+    std::size_t characterCount = 0;
+    for (const char *cursor = text; *cursor; ++cursor)
+        ++characterCount;
+    float cursorX = centerX - static_cast<float>(characterCount) * 8.0f * scaleX * 0.5f;
+    while (*text) {
+        const std::uint32_t codepoint = static_cast<std::uint8_t>(*text++);
+        const std::uint32_t character = codepoint < 128U ? codepoint : static_cast<std::uint32_t>('?');
+        const std::uint32_t column = character & 15U;
+        const std::uint32_t row = character >> 4U;
+        constexpr float inverseAtlasSize = 1.0f / 128.0f;
+        const float u0 = (static_cast<float>(column * 8U) + 0.5f) * inverseAtlasSize;
+        const float v0 = (static_cast<float>(row * 8U) + 0.5f) * inverseAtlasSize;
+        const float u1 = (static_cast<float>(column * 8U + 8U) - 0.5f) * inverseAtlasSize;
+        const float v1 = (static_cast<float>(row * 8U + 8U) - 0.5f) * inverseAtlasSize;
+        psp::QueueTexturedTextureRegionQuad(g_pspMenuFontTexture, kDreamcastViewportLeft + cursorX * kDreamcastScale,
+                                            topY * kDreamcastScale, 8.0f * scaleX * kDreamcastScale,
+                                            8.0f * scaleY * kDreamcastScale, u0, v0, u1, v1, colour);
+        cursorX += 8.0f * scaleX;
+    }
+}
+
+void QueuePspMenuText(const char *text, float centerX, float topY, float maximumWidth, std::uint32_t colour, bool outline) {
+    EnsurePspMenuFont();
+    if (!text || !*text || !g_pspMenuFontTexture)
+        return;
+    (void)outline;
+    const float lineWidth = static_cast<float>(std::strlen(text)) * 8.0f;
+    const float scaleX = maximumWidth > 0.0f ? std::min(2.0f, maximumWidth / lineWidth) : 1.0f;
+    QueuePspMenuTextLayer(text, centerX, topY, scaleX, 2.0f, colour);
+}
+
+dreamcast_frontend::Animation g_dreamcastAnimation{};
+bool g_dreamcastTitleVisible = false;
+
+void DrawDreamcastTitle() {
+    g_dreamcastTitleVisible = true;
+    const auto &controller = DISP_GetTitleController();
+    g_ClearColour = dreamcast_frontend::TitleClearColour(controller);
+    dreamcast_frontend::DrawList list;
+    dreamcast_frontend::DrawTitlePhase(list, controller);
+    psp::frontend::Submit(list, g_currentSettings.display.aspectRatio != 0);
+}
+
+void ConfigurePspMainMenuWheel() {
+    UIButtonWheel &wheel = g_uiButtonWheels[0];
+    if (g_mainMenuWheelIndex == 0 && g_activeMainMenuWheelLayout == &wheel && wheel.inUse == 1)
+        return;
+    std::memset(&wheel, 0, sizeof(wheel));
+    std::snprintf(wheel.id.data(), wheel.id.size(), "%s", "MainMenuButtonWheel");
+    wheel.inUse = 1;
+    wheel.count = 4;
+    wheel.width = 0.55f;
+    wheel.height = 0.34f;
+    wheel.unselectedColour = 0xffc0c0c0U;
+    wheel.selectedColour = 0xffffffffU;
+    constexpr std::array<float, 4> angles{0.0f, 1.5707963f, 3.1415927f, 4.7123890f};
+    for (std::size_t index = 0; index < wheel.items.size(); ++index) {
+        UIButtonWheelItem &item = wheel.items[index];
+        item.field0 = {static_cast<std::int32_t>(index), 0};
+        item.animSlots = {-1, -1};
+        item.index = static_cast<std::int32_t>(index);
+        item.size = 3;
+        item.field50 = "";
+        item.field58 = "";
+        wheel.angles[index] = angles[index & 3U];
+    }
+    wheel.items[0].label.token = "New Game";
+    wheel.items[1].label.token = "Load";
+    wheel.items[2].label.token = "Continue";
+    wheel.items[3].label.token = "Options";
+    wheel.items[0].description.token = "Start a new game.";
+    wheel.items[1].description.token = "Load a saved game.";
+    wheel.items[2].description.token = "Continue your game.";
+    wheel.items[3].description.token = "Select to modify the game settings.";
+    wheel.mouseCallbacks.clicked = MainMenuWheel_Clicked;
+    g_mainMenuWheelIndex = 0;
+    g_activeMainMenuWheelLayout = &wheel;
+    g_mainMenuWheelSnapshot = wheel;
+    g_mainMenuWheelPreviousSelection = wheel.selection;
+    g_mainMenuWheelRefresh = 1;
+    if (g_mainMenuWheelAnimSlot < 0)
+        g_mainMenuWheelAnimSlot = UIAnimAllocSlot();
+}
+
+void DrawDreamcastMainMenu() {
+    if (g_dreamcastTitleVisible)
+        g_dreamcastAnimation = {};
+    g_dreamcastTitleVisible = false;
+    bool hasSave = false;
+    for (std::size_t slot = 0; slot < 10; ++slot) {
+        const S1SaveSummary *const summary = HPLG_GetSaveSummary(slot);
+        hasSave |= summary && summary->numberOfSaves != 0;
+    }
+    const std::int32_t selection = g_activeMainMenuWheelLayout ? g_activeMainMenuWheelLayout->selection : 0;
+    dreamcast_frontend::DrawList list;
+    dreamcast_frontend::DrawMainMenu(list, g_dreamcastAnimation, selection, hasSave, HPLG_HasBookkeepingProgress());
+    psp::frontend::Submit(list, g_currentSettings.display.aspectRatio != 0);
+    dreamcast_frontend::Tick(g_dreamcastAnimation, false);
+}
+
+void DrawPspOptionsMenu() {
+    if (!EnsurePspOptionsSprites())
+        return;
+    if (const OwnedSpriteAsset *const background = FindSpriteAssetByName(g_pspOptionsSpriteSet, "op_bg")) {
+        psp::QueueTexturedTextureRegionQuad(background->textureHandle, kDreamcastViewportLeft, 0.0f, kDreamcastViewportWidth,
+                                            kPspFrontendHeight, 0.1875f, 0.03125f, 0.8125f, 0.96875f);
+    }
+    QueuePspOptionsSprite("option2", 256.0f, 8.0f, 128.0f, 32.0f);
+
+    constexpr std::array<const char *, 4> categories{"SOUND", "CONFIG", "CHILD", "VOICE"};
+    constexpr std::array<float, 4> categoryCentersY{74.0f, 159.0f, 242.0f, 329.0f};
+    const std::int32_t selected = std::clamp(g_pspOptionsSelectedTab, 0, 3);
+    for (std::size_t index = 0; index < categories.size(); ++index) {
+        QueuePspMenuText(categories[index], 220.0f, categoryCentersY[index] - 8.0f, 120.0f,
+                         index == static_cast<std::size_t>(selected) ? 0xff171410U : 0xa0171410U, false);
+    }
+
+    constexpr std::array<const char *, 4> descriptions{
+        "Change sound settings.", "Change game settings.", "Change child settings.", "Change voice settings."};
+    QueuePspMenuText(descriptions[static_cast<std::size_t>(selected)], 300.0f, 418.0f, 426.0f, 0xfffaf8edU, true);
+    QueueDreamcastSprite(5, 520.0f, 435.0f, 30.0f, 30.0f);
+    QueueDreamcastSprite(6, 556.0f, 436.0f, 30.0f, 30.0f);
+    QueueDreamcastSprite(7, 592.0f, 436.0f, 30.0f, 30.0f);
+}
+
+} // namespace
+#endif
+
+#if defined(SHENMUE_HOST_PSP)
+void RenderPspFrontendFrame() {
+    static std::uint32_t renderedFrames = 0;
+    const UIBaseRuntime &pressStart = g_uiElements[0x3c];
+    const UIBaseRuntime &mainMenu = g_uiElements[4];
+    const UIBaseRuntime &wheel = g_uiElements[kMainMenuWheelElement];
+    const UIBaseRuntime &options = g_uiElements[kUiSubMenuOptions];
+
+    if (wheel.isVisible && mainMenu.isVisible) {
+        if (g_pspOptionsSpriteSet.count != 0)
+            ReleaseSpriteSet(g_pspOptionsSpriteSet);
+        g_ClearColour = 0xff000000U;
+        DrawDreamcastMainMenu();
+    } else if (options.isVisible) {
+        g_ClearColour = 0xff000000U;
+        const std::uint16_t directions = g_inputState.slots[0].repeatedPresses;
+        const std::int32_t previousTab = g_pspOptionsSelectedTab;
+        if ((directions & 0x5000U) != 0)
+            g_pspOptionsSelectedTab = (g_pspOptionsSelectedTab + 3) & 3;
+        else if ((directions & 0xa000U) != 0)
+            g_pspOptionsSelectedTab = (g_pspOptionsSelectedTab + 1) & 3;
+        if (previousTab != g_pspOptionsSelectedTab)
+            psp::BootLog("PSP frontend: Options tab changed from=%d to=%d", previousTab, g_pspOptionsSelectedTab);
+        if ((g_inputState.slots[0].pressedPriority & 0x200U) != 0) {
+            psp::BootLog("PSP frontend: Options back to main menu");
+            ui_runtime_detail::UpdateStatByIdx(g_mainMenuStatIndex, 0);
+            return;
+        }
+        DrawPspOptionsMenu();
+    } else if (pressStart.isVisible) {
+        DrawDreamcastTitle();
+    } else {
+        if (!DISP_IsOnMainMenu())
+            psp::frontend::ReleaseTextures();
+        return;
+    }
+
+    ++renderedFrames;
+    if (renderedFrames == 1 || (renderedFrames % 120U) == 0) {
+        psp::BootLog("PSP frontend: persistent redraw frame=%u title=%d main=%d wheel=%d selection=%d",
+                     static_cast<unsigned>(renderedFrames), pressStart.isVisible ? 1 : 0, mainMenu.isVisible ? 1 : 0,
+                     wheel.isVisible ? 1 : 0, g_activeMainMenuWheelLayout ? g_activeMainMenuWheelLayout->selection : -1);
+    }
+}
+#endif
+
 std::uint32_t LoadPressStart() {
     UIBaseRuntime &pressStart = g_uiElements[0x3c];
+#if defined(SHENMUE_HOST_PSP)
+    if (!pressStart.setup) {
+        pressStart.setup = 1;
+        pressStart.someFlag3 = 1;
+        pressStart.config.screenWidth = 480;
+        pressStart.config.screenHeight = 272;
+        pressStart.config.init = 3;
+        pressStart.config.uiHandleIndex = -1;
+        pressStart.isHandledExternally = 1;
+        g_pressStartIdleFrames = 600;
+        psp::BootLog("LoadPressStart: using recovered Dreamcast title presentation");
+    }
+    return static_cast<std::uint32_t>(pressStart.setup);
+#else
     if (!pressStart.setup) {
         pressStart.setup = 1;
         pressStart.someFlag3 = 1;
         constexpr char path[] = "/ui/mainmenu_New/MainMenu_PressStart.ui";
         std::memcpy(pressStart.uiConfigFilepath, path, sizeof(path));
         const std::uint32_t handle = OpenUIFile(path, pressStart);
+#if defined(SHENMUE_HOST_PSP)
+        static std::uint32_t traceLoadPressStart = 0;
+        if (traceLoadPressStart++ < 4)
+            psp::BootLog("LoadPressStart: queued handle=%08x", static_cast<unsigned>(handle));
+#endif
+        if (static_cast<std::int32_t>(handle) < 0) {
+            pressStart.setup = 0;
+            pressStart.config.init = 0;
+            return 0;
+        }
         pressStart.config.screenWidth = static_cast<std::int16_t>(handle);
         pressStart.config.screenHeight = static_cast<std::int16_t>(handle >> 16U);
         pressStart.config.init = 1;
     }
     return static_cast<std::uint32_t>(pressStart.setup);
+#endif
 }
 
 std::uint32_t LoadMainMenu() {
     UIBaseRuntime &mainMenu = g_uiElements[4];
+#if defined(SHENMUE_HOST_PSP)
+    if (!mainMenu.setup) {
+        mainMenu.setup = 1;
+        mainMenu.someFlag3 = 1;
+        mainMenu.config.screenWidth = 480;
+        mainMenu.config.screenHeight = 272;
+        mainMenu.config.init = 3;
+        mainMenu.config.uiHandleIndex = -1;
+        mainMenu.isHandledExternally = 1;
+        psp::BootLog("LoadMainMenu: using recovered Dreamcast main-menu presentation");
+    }
+    return static_cast<std::uint32_t>(mainMenu.setup);
+#else
     if (!mainMenu.setup) {
         mainMenu.setup = 1;
         mainMenu.someFlag3 = 1;
         constexpr char path[] = "/ui/mainmenu_New/MainMenu.ui";
         std::memcpy(mainMenu.uiConfigFilepath, path, sizeof(path));
         const std::uint32_t handle = OpenUIFile(path, mainMenu);
+        if (static_cast<std::int32_t>(handle) < 0) {
+            mainMenu.setup = 0;
+            mainMenu.config.init = 0;
+            return 0;
+        }
         mainMenu.config.screenWidth = static_cast<std::int16_t>(handle);
         mainMenu.config.screenHeight = static_cast<std::int16_t>(handle >> 16U);
         mainMenu.config.init = 1;
     }
     return static_cast<std::uint32_t>(mainMenu.setup);
+#endif
 }
 
 bool CaptureFrontendOptionsSettingsFile() {
@@ -310,7 +640,23 @@ void SetFrontendAutomationStage(FrontendAutomationStage stage, const char *optio
 }
 
 std::uint32_t LoadMainMenuWheel() {
+#if defined(SHENMUE_HOST_PSP)
+    UIBaseRuntime &element = g_uiElements[kMainMenuWheelElement];
+    if (!element.setup) {
+        element.setup = 1;
+        element.someFlag3 = 1;
+        element.config.screenWidth = 480;
+        element.config.screenHeight = 272;
+        element.config.init = 3;
+        element.config.uiHandleIndex = -1;
+        element.isHandledExternally = 1;
+        psp::BootLog("LoadMainMenuWheel: using Dreamcast menu input");
+    }
+    ConfigurePspMainMenuWheel();
+    return static_cast<std::uint32_t>(element.setup);
+#else
     return LoadPresentationDefinition(kMainMenuWheelElement, "/ui/mainmenu_New/MainMenu_Wheel.ui");
+#endif
 }
 
 
@@ -320,6 +666,13 @@ void MainMenuWheel_RefreshProgressPreset() {
     UIButtonWheel *const wheel = g_activeMainMenuWheelLayout;
     if (!wheel)
         return;
+#if defined(SHENMUE_HOST_PSP)
+    // The Dreamcast title menu always exposes its four wheel positions. Continue
+    // can report an empty save list when no data exists, so do not hide it based
+    // on the PC bookkeeping preset used by the recovered UI definition.
+    wheel->items[2].field0[1] = 0;
+    g_mainMenuWheelRefresh = 1;
+#else
     const bool progress = HPLG_HasBookkeepingProgress();
     wheel->items[2].field0[1] = progress ? 0 : 1;
     g_mainMenuWheelRefresh = 1;
@@ -330,6 +683,7 @@ void MainMenuWheel_RefreshProgressPreset() {
         wheel->angles[1] = 4.1887903f;
         wheel->angles[3] = 2.0943952f;
     }
+#endif
 }
 
 
@@ -345,18 +699,51 @@ std::int32_t MainMenuWheel_ReadInput(std::int32_t index) {
         const std::int32_t slot = wheel.items[static_cast<std::size_t>(wheel.selection & 7)].animSlots[0];
         return static_cast<std::uint32_t>(slot) < g_uiAnimSlots.size() && g_uiAnimSlots[static_cast<std::size_t>(slot)].status != 0;
     };
-    if ((repeated & 0x8000U) != 0 && !turning()) {
+    const bool isTurning = turning();
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t initialTraceCount = 0;
+    static std::uint32_t directionTraceCount = 0;
+    const std::uint16_t directionMask = static_cast<std::uint16_t>((g_inputState.slots[0].held | repeated) & 0xc000U);
+    bool traceInput = false;
+    if (initialTraceCount < 16) {
+        ++initialTraceCount;
+        traceInput = true;
+    }
+    if (directionMask != 0 && directionTraceCount < 48) {
+        ++directionTraceCount;
+        traceInput = true;
+    }
+    if (traceInput) {
+        const std::int32_t animSlot = wheel.items[static_cast<std::size_t>(wheel.selection & 7)].animSlots[0];
+        const std::uint32_t animStatus = static_cast<std::uint32_t>(animSlot) < g_uiAnimSlots.size()
+                                             ? g_uiAnimSlots[static_cast<std::size_t>(animSlot)].status
+                                             : 0;
+        psp::BootLog("WheelInput: index=%d selection=%d held=%04x pressed=%04x repeated=%04x animSlot=%d animStatus=%u turning=%u",
+                     index, wheel.selection, static_cast<unsigned>(g_inputState.slots[0].held),
+                     static_cast<unsigned>(g_inputState.slots[0].pressedPriority), static_cast<unsigned>(repeated), animSlot,
+                     static_cast<unsigned>(animStatus), isTurning ? 1U : 0U);
+    }
+#endif
+    if ((repeated & 0x8000U) != 0 && !isTurning) {
         wheel.selection = wheel.selection - 1 < 0 ? wheel.count - 1 : wheel.selection - 1;
         repeated = 0;
         step = 1;
         PlayGatedUiSound(g_uiNavigateSoundFrame, kUiNavigateSound);
         }
 
-    if ((repeated & 0x4000U) != 0 && !turning()) {
+    if ((repeated & 0x4000U) != 0 && !isTurning) {
         wheel.selection = wheel.selection + 1 >= wheel.count ? 0 : wheel.selection + 1;
         step = -1;
         PlayGatedUiSound(g_uiNavigateSoundFrame, kUiNavigateSound);
         }
+
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t selectionTraceCount = 0;
+    if (step != 0 && selectionTraceCount < 32) {
+        ++selectionTraceCount;
+        psp::BootLog("WheelInput: selection changed index=%d step=%d selection=%d", index, step, wheel.selection);
+    }
+#endif
 
     return step;
 }
@@ -367,6 +754,19 @@ std::int32_t MainMenuWheel_ReadInput(std::int32_t index) {
 
 
 void MainMenuWheel_Update() {
+#if defined(SHENMUE_HOST_PSP)
+    UIButtonWheel *const wheel = g_activeMainMenuWheelLayout;
+    if (!wheel)
+        return;
+    const std::uint16_t directions = g_inputState.slots[0].repeatedPresses & 0xf000U;
+    const std::int32_t next = dreamcast_frontend::SelectMenuItem(wheel->selection, directions);
+    g_mainMenuWheelRefresh = 0;
+    if (next != wheel->selection) {
+        wheel->selection = next;
+        PlayGatedUiSound(g_uiNavigateSoundFrame, kUiNavigateSound);
+        psp::BootLog("DC frontend: selection=%d directions=%04x", next, static_cast<unsigned>(directions));
+    }
+#else
     if (g_mainMenuWheelIndex == -1)
         return;
     const std::int32_t step = MainMenuWheel_ReadInput(g_mainMenuWheelIndex);
@@ -418,6 +818,7 @@ void MainMenuWheel_Update() {
             item.index84 = 0;
         UIAnim_Start(item.animSlots[1], item.placeScale, wheel->scales[static_cast<std::size_t>(item.index84 & 7)][0], 0.3f, 0.0f);
     }
+#endif
 }
 
 void PlayMainMenuAcceptSound() {
@@ -430,10 +831,17 @@ namespace shenmue::s1 {
 
 
 std::int32_t ConfirmChanges() {
+#if defined(SHENMUE_HOST_PSP)
+    // The PSP frontend currently exposes the Dreamcast Options landing page
+    // without editing PC settings, so leaving it should not open the PC-only
+    // unsaved-settings prompt.
+    return 0;
+#else
     if (!g_uiElements[kUiSubMenuOptions].isVisible || !Options_SettingsChanged())
         return 0;
     d3t::MessageBox("UIOPTUNSAV", false, 1, KeepOrRevertSettings, 0.0f); // @text EN: "Do you wish to save your changes?" | JA: "変更した項目を保存しますか？"
     return 1;
+#endif
 }
 }
 
@@ -442,6 +850,14 @@ namespace shenmue::s1::ui_runtime_detail {
 
 
 bool UpdateStatByIdx(std::int32_t current, std::int32_t next) {
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t transitionTraceCount = 0;
+    const bool traceTransition = current != next && transitionTraceCount < 16;
+    if (traceTransition) {
+        ++transitionTraceCount;
+        psp::BootLog("MainMenuStat: begin current=%d next=%d", current, next);
+    }
+#endif
     if (current >= 0 && current < 4) {
         if (kMainMenuIds[static_cast<std::size_t>(current)] == kUiSubMenuOptions && ConfirmChanges() == 1)
             return false;
@@ -455,6 +871,16 @@ bool UpdateStatByIdx(std::int32_t current, std::int32_t next) {
         g_mainMenuStatIndex = next;
         MainMenu_UpdateTitle();
     }
+#if defined(SHENMUE_HOST_PSP)
+    if (traceTransition) {
+        psp::BootLog("MainMenuStat: complete current=%d next=%d stat=%d", current, next, g_mainMenuStatIndex);
+        if (next == 2) {
+            const UIBaseRuntime &options = g_uiElements[kUiSubMenuOptions];
+            psp::BootLog("MainMenuStat: options visible=%d init=%d setup=%d handle=%d", options.isVisible, options.config.init,
+                         options.setup, options.config.uiHandleIndex);
+        }
+    }
+#endif
     return true;
 }
 
@@ -492,6 +918,14 @@ void MainMenuWheel_ResetLayout() {
 
 
 void MainMenuWheel_ActivateItem(std::int32_t item) {
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t activationTraceCount = 0;
+    if (activationTraceCount < 16) {
+        ++activationTraceCount;
+        psp::BootLog("MainMenuWheel: activate item=%d selection=%d", item,
+                     g_activeMainMenuWheelLayout ? g_activeMainMenuWheelLayout->selection : -1);
+    }
+#endif
     PlayMainMenuAcceptSound();
     switch (item) {
     case 0:
@@ -519,6 +953,9 @@ void MainMenuWheel_ActivateItem(std::int32_t item) {
         }
         break;
     case 3:
+#if defined(SHENMUE_HOST_PSP)
+        g_pspOptionsSelectedTab = 0;
+#endif
         UpdateStatByIdx(g_mainMenuStatIndex, 2);
         break;
     default:
@@ -538,6 +975,13 @@ void MainMenuWheel_Clicked(float *, void *data) {
 
 
 std::int64_t MainMenuWheelSelected() {
+#if defined(SHENMUE_HOST_PSP)
+    if (g_mainMenuWheelAnimSlot < 0)
+        g_mainMenuWheelAnimSlot = UIAnimAllocSlot();
+    ConfigurePspMainMenuWheel();
+    MainMenuWheel_ResetLayout();
+    return 1;
+#else
     g_mainMenuWheelAnimSlot = UIAnimAllocSlot();
     const std::uint32_t slot = static_cast<std::uint32_t>(g_uiElements[kMainMenuWheelElement].config.uiHandleIndex);
     g_mainMenuWheelIndex = UI_FindViewButtonWheel(slot, "MainMenuButtonWheel");
@@ -557,6 +1001,7 @@ std::int64_t MainMenuWheelSelected() {
         g_mainMenuWheelSnapshot = *wheel;
     }
     return 1;
+#endif
 }
 
 
@@ -613,9 +1058,28 @@ std::int64_t MainMenuWheelTick() {
     const UIBaseRuntime &element = g_uiElements[kMainMenuWheelElement];
     const std::uint32_t slot = static_cast<std::uint32_t>(element.config.uiHandleIndex);
     g_currActiveUIIndex = element.index;
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t tickTraceCount = 0;
+    static std::uint32_t tickUpdateTraceCount = 0;
+    if (tickTraceCount < 24) {
+        ++tickTraceCount;
+        psp::BootLog("WheelTick: call=%u element=%d handle=%u wheel=%d selection=%d held=%04x repeated=%04x",
+                     static_cast<unsigned>(tickTraceCount), element.index, static_cast<unsigned>(slot), g_mainMenuWheelIndex,
+                     g_activeMainMenuWheelLayout ? g_activeMainMenuWheelLayout->selection : -1,
+                     static_cast<unsigned>(g_inputState.slots[0].held),
+                     static_cast<unsigned>(g_inputState.slots[0].repeatedPresses));
+    }
+#endif
     if (slot <= 75U)
         UI_InputHandler(GNuklearWindow, static_cast<std::int32_t>(slot), 0, g_uiViewSlots[slot].widgetCount);
     MainMenuWheel_Update();
+#if defined(SHENMUE_HOST_PSP)
+    if (g_activeMainMenuWheelLayout && g_inputState.slots[0].held != 0 && tickUpdateTraceCount < 32) {
+        ++tickUpdateTraceCount;
+        psp::BootLog("WheelTick: after update selection=%d repeated=%04x", g_activeMainMenuWheelLayout->selection,
+                     static_cast<unsigned>(g_inputState.slots[0].repeatedPresses));
+    }
+#endif
     return 0;
 }
 
@@ -642,20 +1106,32 @@ void MainMenuWheel_UpdateImages() {
 
 
 void MainMenuWheelRender() {
+#if defined(SHENMUE_HOST_PSP)
+    static bool tracedRender = false;
+    if (!tracedRender) {
+        tracedRender = true;
+        psp::BootLog("PSP frontend: MainMenuWheelRender entered uiState=%d selection=%d", g_currUIState,
+                     g_activeMainMenuWheelLayout ? g_activeMainMenuWheelLayout->selection : -1);
+    }
+#endif
     LoadMainMenuWheel();
     g_inputState.slots[0].pressedPriority = 0;
     g_mainMenuNewGamePicked = 0;
     g_mainMenuWheelArmed = 0;
+#if !defined(SHENMUE_HOST_PSP)
     UI_ActivateElement(g_uiElements[kUiGameMenuInformationBar]);
+#endif
     g_iIsInGame = 0;
     MainMenuWheel_RefreshProgressPreset();
     MainMenuWheel_Update();
+#if !defined(SHENMUE_HOST_PSP)
     InformationBarMessage message{};
     if (g_activeMainMenuWheelLayout)
         message.text = g_activeMainMenuWheelLayout->items[static_cast<std::size_t>(g_activeMainMenuWheelLayout->selection & 7)].description.token;
     message.noOutline = 1;
     d3t::CopyStringToUILabel(&message);
     MainMenuWheel_UpdateImages();
+#endif
 }
 
 
@@ -863,7 +1339,9 @@ void MainMenuRender() {
     g_isRenderSuppressed = 1;
     UpdateStatByIdx(g_mainMenuStatIndex, 0);
     g_mainMenuOpened = 0;
+#if !defined(SHENMUE_HOST_PSP)
     UI_ActivateElement(g_uiElements[kUiGameHud]);
+#endif
     constexpr std::array<std::int16_t, 4> kMainMenuPrompts{45, 44, -1, -1};
     for (std::size_t slot = 0; slot < kMainMenuPrompts.size(); ++slot)
         g_searchPromptIconSlots[slot] = kMainMenuPrompts[slot];
@@ -986,6 +1464,11 @@ void PressStart_SelectLogo() {
 
 
 std::int64_t PressStartSelected() {
+#if defined(SHENMUE_HOST_PSP)
+    g_pressStartBlinkSlot = -1;
+    g_pressStartIntroActive = false;
+    return 1;
+#else
     if (validateActiveRenderHandle())
         Shenmue_DispatchRenderPipeline();
     const std::uint32_t slot = static_cast<std::uint32_t>(g_uiElements[0x3c].config.uiHandleIndex);
@@ -1021,12 +1504,17 @@ std::int64_t PressStartSelected() {
         PressStart_StartIntro();
     g_frontendEmblemImages[static_cast<std::size_t>(g_frontendEmblemImageCount++)] = g_pressStartEmblemImage;
     return 1;
+#endif
 }
 
 
 std::int64_t PressStartInput() {
 #if SHEN_AUTO_TEST_ENABLED
     return 0;
+#else
+#if defined(SHENMUE_HOST_PSP)
+    if (!DISP_AcceptTitleStart(g_inputState.slots[0].pressedPriority))
+        return 0;
 #else
     if (g_pressStartIntroActive) {
         if ((g_inputState.slots[0].pressedPriority & 0xfec6U) != 0)
@@ -1036,6 +1524,7 @@ std::int64_t PressStartInput() {
     if ((g_inputState.slots[0].pressedPriority & 0x400U) == 0) {
         return 0;
     }
+#endif
     MainMenuWheel_ResetLayout();
     PlayMainMenuAcceptSound();
     if (g_currUIState == -1 || g_currUIState == 0x3c)
@@ -1057,6 +1546,18 @@ std::int64_t PressStartInput() {
 
 
 std::int64_t PressStartTick() {
+#if defined(SHENMUE_HOST_PSP)
+#if defined(SHENMUE_PSP_TEST_AUTO_CONFIRM)
+    static bool testConfirmQueued = false;
+    if (!testConfirmQueued && DISP_GetTitleController().phase == 2) {
+        testConfirmQueued = true;
+        g_pendingInputFlags |= 0x0800U;
+        psp::BootLog("PSP test: queued one-shot title Start");
+    }
+#endif
+    g_currActiveUIIndex = g_uiElements[0x3c].index;
+    return 0;
+#else
 #if SHEN_AUTO_TEST_ENABLED
     constexpr std::uint8_t console = 0;
 #else
@@ -1119,14 +1620,24 @@ std::int64_t PressStartTick() {
             pressStart.isVisible = 0;
     }
     return 0;
+#endif
 }
 
 
 
 void PressStartRender() {
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t traceCount = 0;
+    if (traceCount++ < 4)
+        psp::BootLog("PressStartRender: frame=%u splash=%d state=%d", static_cast<unsigned>(traceCount), g_currentSplashScreenIndex,
+                     DISP_GetTitleState());
+#endif
     g_iIsInGame = 0;
     LoadPressStart();
 
+#if defined(SHENMUE_HOST_PSP)
+    g_pressStartIdleFrames = 600;
+#else
     if (g_pressStartIntroPending) {
         g_pressStartIntroActive = true;
         PressStart_StartIntro();
@@ -1136,6 +1647,7 @@ void PressStartRender() {
     }
     PressStart_SelectLogo();
     g_pressStartIdleFrames = 600;
+#endif
 }
 
 
@@ -1168,6 +1680,24 @@ std::int64_t GetInput() {
 }
 
 void InitLoadingSplash() {
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t traceCount = 0;
+    if (traceCount++ < 4)
+        psp::BootLog("InitLoadingSplash: frame=%u splash=%d", static_cast<unsigned>(traceCount), g_currentSplashScreenIndex);
+#endif
+#if defined(SHENMUE_HOST_PSP)
+    static bool pspBootToTitleStarted = false;
+    if (!pspBootToTitleStarted) {
+        pspBootToTitleStarted = true;
+        g_currentSplashScreenIndex = static_cast<std::int32_t>(g_splashScreens.size());
+        g_splashPanel = false;
+        d3t::ResetElementByIdx(0x3b);
+        LoadPressStart();
+        d3t::ActivateElementByIdx(0x3c);
+        psp::BootLog("InitLoadingSplash: bypassed unavailable PC splash assets; activated original Press Start element");
+    }
+    return;
+#else
     LoadSplash();
     const std::size_t firstSplash = g_dbg_is_jp_ver != 0 ? 0U : 2U;
     g_currentSplashScreenIndex = static_cast<std::int32_t>(firstSplash);
@@ -1185,6 +1715,7 @@ void InitLoadingSplash() {
         return;
     }
     setSplashState(0);
+#endif
 }
 
 std::int64_t ProcessGlobalGameState() {
@@ -3058,6 +3589,16 @@ namespace shenmue::s1 {
 
 
 std::int64_t OptionsMenu_IsSelected() {
+#if defined(SHENMUE_HOST_PSP)
+    static bool tracedSelection = false;
+    if (!tracedSelection) {
+        tracedSelection = true;
+        const UIBaseRuntime &options = g_uiElements[kUiSubMenuOptions];
+        psp::BootLog("OptionsMenu_IsSelected: visible=%d init=%d setup=%d handle=%d", options.isVisible, options.config.init,
+                     options.setup, options.config.uiHandleIndex);
+    }
+    return 1;
+#endif
     g_optionsControlsRowDraw = OptionsRow_Draw;
     g_optionsAudioRowDraw = OptionsRow_Draw;
     g_optionsGraphicsRowDraw = OptionsRow_Draw;
@@ -3178,12 +3719,32 @@ std::int64_t OptionsMenu_Reset() {
     g_optionsWindows = {};
     g_optionsLabels = {};
     g_optionsColourImages = {};
+#if defined(SHENMUE_HOST_PSP)
+    g_pspOptionsSelectedTab = 0;
+#endif
     return 0;
 }
 
 
 
 std::int64_t OptionsMenu_Tick() {
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t tickTraceCount = 0;
+    if (tickTraceCount < 8) {
+        ++tickTraceCount;
+        const UIBaseRuntime &options = g_uiElements[kUiSubMenuOptions];
+        psp::BootLog("OptionsMenu_Tick: call=%u visible=%d init=%d handle=%d", static_cast<unsigned>(tickTraceCount),
+                     options.isVisible, options.config.init, options.config.uiHandleIndex);
+    }
+#endif
+#if defined(SHENMUE_HOST_PSP)
+    const UIBaseRuntime &element = g_uiElements[kUiSubMenuOptions];
+    if (!element.isVisible)
+        return 0;
+    g_currUIState = -1;
+    g_currActiveUIIndex = element.index;
+    return 0;
+#else
     g_currUIState = d3t::CheckAllKeysAreBound() ? kUiSubMenuOptionsControls : -1;
     const auto loadEnglish = [] {
         if (g_uiLoadedLanguage != -1)
@@ -3208,11 +3769,25 @@ std::int64_t OptionsMenu_Tick() {
     if (slot <= 0x4bU)
         UI_InputHandler(GNuklearWindow, static_cast<std::int32_t>(slot), 0, g_uiViewSlots[slot].widgetCount);
     return 0;
+#endif
 }
 
 
 
 void OptionsMenu_Render() {
+#if defined(SHENMUE_HOST_PSP)
+    static bool tracedRender = false;
+    if (!tracedRender) {
+        tracedRender = true;
+        const UIBaseRuntime &options = g_uiElements[kUiSubMenuOptions];
+        psp::BootLog("OptionsMenu_Render: visible=%d init=%d handle=%d", options.isVisible, options.config.init,
+                     options.config.uiHandleIndex);
+    }
+    g_optionsClosePending = 0;
+    g_optionsInputAction = nullptr;
+    g_optionsPendingAction = -1;
+    return;
+#endif
     g_optionsClosePending = 0;
     g_optionsInputAction = nullptr;
     UIBaseRuntime &informationBar = g_uiElements[kUiGameMenuInformationBar];
@@ -3236,6 +3811,19 @@ void OptionsMenu_Render() {
 
 
 std::int64_t OptionsMenu_IsPressed() {
+#if defined(SHENMUE_HOST_PSP)
+    const std::uint16_t pressed = g_inputState.slots[0].pressedPriority;
+    if ((pressed & 0x200U) != 0) {
+        psp::BootLog("PSP frontend: Options cancel input");
+        ui_runtime_detail::UpdateStatByIdx(g_mainMenuStatIndex, 0);
+        return 1;
+    }
+    if ((pressed & 0x400U) != 0) {
+        psp::BootLog("PSP frontend: Options confirm tab=%d", g_pspOptionsSelectedTab);
+        return 1;
+    }
+    return 1;
+#else
     if (g_optionsClosePending) {
         if (!g_isInGame) {
             UpdateStatByIdx(g_mainMenuStatIndex, 0);
@@ -3251,16 +3839,22 @@ std::int64_t OptionsMenu_IsPressed() {
         list.selected = list.first;
     Options_SwitchTab();
     return 1;
+#endif
 }
 
 
 std::int64_t OptionsMenu_Destroy() {
+#if defined(SHENMUE_HOST_PSP)
+    g_optionsClosePending = 0;
+    return 1;
+#else
     if (Options_SettingsChanged())
         d3t::WriteSettingsFile();
     const bool closed = d3t::ResetElementByIdx(kOptionsChildren[static_cast<std::size_t>(g_optionsTabList.selected)]);
     if (!closed)
         g_optionsClosePending = 1;
     return closed ? 1 : 0;
+#endif
 }
 
 
@@ -3440,6 +4034,16 @@ std::int64_t LoadSplash() {
         constexpr char path[] = "/ui/Splash/Splash.ui";
         std::memcpy(splash.uiConfigFilepath, path, sizeof(path));
         const std::uint32_t handle = OpenUIFile(path, splash);
+#if defined(SHENMUE_HOST_PSP)
+        static std::uint32_t traceLoadSplash = 0;
+        if (traceLoadSplash++ < 4)
+            psp::BootLog("LoadSplash: queued handle=%08x", static_cast<unsigned>(handle));
+#endif
+        if (static_cast<std::int32_t>(handle) < 0) {
+            splash.setup = 0;
+            splash.config.init = 0;
+            return 0;
+        }
         splash.config.screenWidth = static_cast<std::int16_t>(handle);
         splash.config.screenHeight = static_cast<std::int16_t>(handle >> 16U);
         splash.config.init = 1;

@@ -14,6 +14,10 @@
 #include <mutex>
 #include <vector>
 
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
+
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <d3d11.h>
@@ -67,9 +71,16 @@ std::int32_t g_TextureRefCount = 0;
 namespace {
 
 constexpr std::size_t kSurfaceCount = 640;
+#if defined(SHENMUE_HOST_PSP)
+// PSP: shrink the texture-handle table to fit the load budget.
+constexpr std::size_t kTextureCount = 0x800;
+constexpr std::uint32_t kTextureIndexMask = 0x7ffU;
+constexpr std::uint32_t kTextureTagMask = 0xfffff800U;
+#else
 constexpr std::size_t kTextureCount = 0x4000;
 constexpr std::uint32_t kTextureIndexMask = 0x3fffU;
 constexpr std::uint32_t kTextureTagMask = 0xffffc000U;
+#endif
 constexpr std::uint32_t kTextureOccupied = 0x80000000U;
 
 std::array<SurfaceMapping, kSurfaceCount> g_surfaceMappings{};
@@ -541,21 +552,35 @@ std::uint32_t CreateTextureResource(const Texture2DDescription &description, boo
 }
 
 std::int32_t CreateDirectXTexture2DWrapper(std::uint32_t surface, std::uint32_t width, std::uint32_t height, std::uint16_t format, const void *pixels) {
-    if (surface < kSurfaceCount && g_surfaceMappings[surface].referenceCount) {
+    if (surface >= kSurfaceCount) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("CreateTextureWrapper: surface out of range=%u", static_cast<unsigned>(surface));
+#endif
+        return 0;
+    }
+    if (g_surfaceMappings[surface].referenceCount) {
         return 0;
     }
     SurfaceMapping &mapping = g_surfaceMappings[surface];
     if (mapping.textureSlot == 0xffffU) {
         if (g_freeTextureHead == g_freeTextureTail) {
-            mapping.textureSlot = 0xffffU;
-        } else {
-            mapping.textureSlot = g_freeTextureSlots[g_freeTextureHead];
-            g_freeTextureHead = (g_freeTextureHead + 1) % kSurfaceCount;
-            ++g_allocatedTextureSlotCount;
+#if defined(SHENMUE_HOST_PSP)
+            psp::BootLog("CreateTextureWrapper: texture slots exhausted surface=%u", static_cast<unsigned>(surface));
+#endif
+            return 0;
         }
+        mapping.textureSlot = g_freeTextureSlots[g_freeTextureHead];
+        g_freeTextureHead = (g_freeTextureHead + 1) % kSurfaceCount;
+        ++g_allocatedTextureSlotCount;
     }
     ++mapping.referenceCount;
-    if (surface >= kSurfaceCount || !mapping.referenceCount || mapping.textureSlot == 0xffffU) {
+    if (!mapping.referenceCount || mapping.textureSlot == 0xffffU || mapping.textureSlot >= kSurfaceCount) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("CreateTextureWrapper: invalid mapping surface=%u refs=%u slot=%u", static_cast<unsigned>(surface),
+                     static_cast<unsigned>(mapping.referenceCount), static_cast<unsigned>(mapping.textureSlot));
+#endif
+        if (mapping.referenceCount)
+            --mapping.referenceCount;
         return 0;
     }
 
@@ -792,6 +817,25 @@ bool GetTexture2DBackendView(std::uint32_t textureHandle, D3TTextureBackendView 
     view->format = resource->format;
     view->bindFlags = resource->bindFlags;
     view->flags = resource->flags;
+    view->swizzled = (resource->reserved & 1U) != 0;
+    return true;
+}
+
+bool AttachTexture2DBackendStorage(std::uint32_t textureHandle, void *storage, std::uint32_t width, std::uint32_t height, std::uint32_t format,
+    void (*releaseCallback)(void *), void *releaseCallbackArgument, bool swizzled) {
+    if (!storage)
+        return false;
+    TextureLock lock;
+    TextureResource *const resource = GetTextureResource(textureHandle);
+    if (!resource || resource->texture || resource->releaseCallback)
+        return false;
+    resource->texture = storage;
+    resource->width = static_cast<std::int32_t>(width);
+    resource->height = static_cast<std::int32_t>(height);
+    resource->format = format;
+    resource->releaseCallback = releaseCallback;
+    resource->releaseCallbackArgument = releaseCallbackArgument;
+    resource->reserved = swizzled ? 1U : 0U;
     return true;
 }
 
@@ -825,6 +869,9 @@ std::int64_t GetStride(std::int32_t width, std::int32_t height, std::uint32_t fo
         return static_cast<std::int64_t>(width) * height;
     case 35:
     case 36:
+    case kPspTexture5551:
+    case kPspTexture5650:
+    case kPspTexture4444:
         return static_cast<std::int64_t>(2) * width * height;
     default:
         return 0;
@@ -1086,21 +1133,43 @@ void InitializePvrTextureSlotStorage() {
 
 void InitPVRTaskData(std::int32_t surfaceIndex) {
     const std::int32_t request = g_surfaceBase + surfaceIndex;
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t traceCount = 0;
+    const bool traceSurfaceInit = traceCount++ < 16;
+    if (traceSurfaceInit)
+        psp::BootLog("InitPVRTaskData: index=%d base=%d request=%d", surfaceIndex, g_surfaceBase, request);
+#endif
     if (request < 0 || request >= static_cast<std::int32_t>(kSurfaceCount)) {
+#if defined(SHENMUE_HOST_PSP)
+        if (traceSurfaceInit)
+            psp::BootLog("InitPVRTaskData: request out of range");
+#endif
         return;
     }
     SurfaceMapping &mapping = g_surfaceMappings[request];
+#if defined(SHENMUE_HOST_PSP)
+    if (traceSurfaceInit)
+        psp::BootLog("InitPVRTaskData: mapping=%p refs=%u slot=%u", static_cast<void *>(&mapping),
+                     static_cast<unsigned>(mapping.referenceCount), static_cast<unsigned>(mapping.textureSlot));
+#endif
     if (!mapping.referenceCount) {
         return;
     }
-    if (mapping.textureSlot != 0xffffU) {
-        SurfaceRecord &record = g_surfaceRecords[mapping.textureSlot];
-        if (record.primary.texture) {
-            InitTexture2DResource(static_cast<std::uint32_t>(record.primary.texture));
-            --g_TextureRefCount;
-        }
-        std::memset(&record, 0, sizeof(record));
+    if (mapping.textureSlot == 0xffffU || mapping.textureSlot >= kSurfaceCount) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("InitPVRTaskData: invalid texture slot=%u with refs=%u", static_cast<unsigned>(mapping.textureSlot),
+                     static_cast<unsigned>(mapping.referenceCount));
+#endif
+        mapping.referenceCount = 0;
+        mapping.textureSlot = 0xffffU;
+        return;
     }
+    SurfaceRecord &record = g_surfaceRecords[mapping.textureSlot];
+    if (record.primary.texture) {
+        InitTexture2DResource(static_cast<std::uint32_t>(record.primary.texture));
+        --g_TextureRefCount;
+    }
+    std::memset(&record, 0, sizeof(record));
     while (mapping.referenceCount) {
         --mapping.referenceCount;
         if (!mapping.referenceCount) {
@@ -1151,7 +1220,7 @@ std::uint32_t ExchangePVRSurfaceTexture(std::int32_t surfaceIndex, std::uint32_t
 std::int32_t d3t_UploadTexture2DToGPU(std::int32_t surfaceIndex, const void *textureDescription, const void *pixels) {
     const auto *const description = static_cast<const TextureUploadDescription *>(textureDescription);
     const std::int32_t request = g_surfaceBase + surfaceIndex;
-    if (request < static_cast<std::int32_t>(kSurfaceCount) && g_surfaceMappings[request].referenceCount) {
+    if (request >= 0 && request < static_cast<std::int32_t>(kSurfaceCount) && g_surfaceMappings[request].referenceCount) {
         ++g_surfaceMappings[request].referenceCount;
         return surfaceIndex;
     }

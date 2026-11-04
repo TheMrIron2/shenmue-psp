@@ -1,5 +1,9 @@
 #include "s1/hlib.hpp"
 
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
+
 #include <bit>
 #include <cassert>
 #include <array>
@@ -45,8 +49,18 @@ std::uint32_t HLib_GetTaskDataOffset(const void *pointer) {
 
 namespace {
 
+// The PC build reserves a 64 MB HLib arena plus an 18 MB malloc arena. Those
+// sizes are far beyond the PSP's memory budget, so the PSP target uses an
+// 16 MB arena for the 64 MB bring-up build. Cold storage, startup font and
+// motion data, retained title textures, and the main-menu sprite set must stay
+// live together while the original boot sequence enters the menu.
+#if defined(SHENMUE_HOST_PSP)
+constexpr std::size_t kArenaSize = 0x1000000;      // 16 MB
+constexpr std::size_t kMallocArenaSize = 0x100000; // 1 MB
+#else
 constexpr std::size_t kArenaSize = 0x4000000;
 constexpr std::size_t kMallocArenaSize = 0x1200000;
+#endif
 constexpr std::size_t kSmallBlockCount = 322;
 constexpr std::int32_t kHLib = SHEN_NAME(HLib);
 
@@ -207,11 +221,50 @@ std::int64_t HLib_CanAllocate64ByteBlock(std::int32_t blockCount) {
     return std::bit_cast<std::int32_t>(remaining) > 0 ? 1 : 0;
 }
 void HLib_FreeUseSpaces() {
-    for (HLib::TaskData *block = g_pFirstTaskData_0; block != g_pLastTaskData_0; block = block->next_ptr) {
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("HLib_FreeUseSpaces: begin first=%p last=%p", static_cast<void *>(g_pFirstTaskData_0),
+                 static_cast<void *>(g_pLastTaskData_0));
+#endif
+    constexpr std::size_t kMaximumBlocks = 65536;
+    const std::uintptr_t arenaBegin = reinterpret_cast<std::uintptr_t>(g_arena.data());
+    const std::uintptr_t arenaEnd = arenaBegin + g_arena.size();
+    std::size_t visited = 0;
+    HLib::TaskData *block = g_pFirstTaskData_0;
+    while (block && block != g_pLastTaskData_0) {
+        const std::uintptr_t blockAddress = reinterpret_cast<std::uintptr_t>(block);
+        if (blockAddress < arenaBegin || blockAddress > arenaEnd - sizeof(HLib::TaskData) || (blockAddress & 31U) != 0) {
+#if defined(SHENMUE_HOST_PSP)
+            psp::BootLog("HLib_FreeUseSpaces: invalid block=%p visited=%u", static_cast<void *>(block), static_cast<unsigned>(visited));
+#endif
+            break;
+        }
+        if (visited >= kMaximumBlocks) {
+#if defined(SHENMUE_HOST_PSP)
+            psp::BootLog("HLib_FreeUseSpaces: block limit reached at %p", static_cast<void *>(block));
+#endif
+            break;
+        }
+#if defined(SHENMUE_HOST_PSP)
+        if (visited < 8) {
+            psp::BootLog("HLib_FreeUseSpaces: block=%p next=%p status=%08x size=%u align=%u", static_cast<void *>(block),
+                         static_cast<void *>(block->next_ptr), static_cast<unsigned>(block->status),
+                         static_cast<unsigned>(block->content_size), static_cast<unsigned>(block->alignment));
+        }
+        if (block->taskToken == SHEN_NAME(STCH)) {
+            psp::BootLog("HLib_FreeUseSpaces: STCH block=%p status=%08x size=%u align=%u", static_cast<void *>(block),
+                         static_cast<unsigned>(block->status), static_cast<unsigned>(block->content_size),
+                         static_cast<unsigned>(block->alignment));
+        }
+#endif
+        ++visited;
         if (block->status == HLIB_USED_TOKEN.name && (block->alignment & 1) == 0) {
             HLib_FreeTaskData(block + 1, -1);
         }
+        block = block->next_ptr;
     }
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("HLib_FreeUseSpaces: arena walk ended visited=%u block=%p", static_cast<unsigned>(visited), static_cast<void *>(block));
+#endif
     for (std::size_t index = 0; index < kSmallBlockCount; ++index) {
         HLib::TaskData *const block = smallHeader(index);
         block->status = 0x20;
@@ -219,12 +272,39 @@ void HLib_FreeUseSpaces() {
         const std::uint64_t freeToken = static_cast<std::uint32_t>(HLIB_FREE_TOKEN.name);
         std::memcpy(block + 1, &freeToken, sizeof(freeToken));
     }
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("HLib_FreeUseSpaces: complete");
+#endif
 }
 
 void *UpdateTaskData_0() {
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("UpdateTaskData_0: begin first=%p last=%p", static_cast<void *>(g_pFirstTaskData),
+                 static_cast<void *>(g_pLastTaskData));
+#endif
     std::uint64_t largestPayload = 0;
     HLib::TaskData *selected = nullptr;
+    const std::uintptr_t arenaBegin = reinterpret_cast<std::uintptr_t>(g_arena.data());
+    const std::uintptr_t arenaEnd = arenaBegin + g_arena.size();
+    std::size_t visited = 0;
+    bool listInvalid = false;
     for (HLib::TaskData *block = g_pFirstTaskData; block; block = block->next_ptr) {
+        const std::uintptr_t blockAddress = reinterpret_cast<std::uintptr_t>(block);
+        if (blockAddress < arenaBegin || blockAddress > arenaEnd - sizeof(HLib::TaskData) || (blockAddress & 31U) != 0 || visited >= 65536) {
+#if defined(SHENMUE_HOST_PSP)
+            psp::BootLog("UpdateTaskData_0: invalid/cyclic block=%p visited=%u", static_cast<void *>(block), static_cast<unsigned>(visited));
+#endif
+            listInvalid = true;
+            break;
+        }
+#if defined(SHENMUE_HOST_PSP)
+        if (visited < 8) {
+            psp::BootLog("UpdateTaskData_0: block=%p next=%p status=%08x size=%u align=%u", static_cast<void *>(block),
+                         static_cast<void *>(block->next_ptr), static_cast<unsigned>(block->status),
+                         static_cast<unsigned>(block->content_size), static_cast<unsigned>(block->alignment));
+        }
+#endif
+        ++visited;
         const auto payloadAddress = reinterpret_cast<std::uintptr_t>(block + 1);
         std::uint32_t payloadSize = 0;
         if ((payloadAddress & 0x1f) == 0) {
@@ -245,8 +325,34 @@ void *UpdateTaskData_0() {
         }
     }
 
+    if (listInvalid) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("UpdateTaskData_0: preserving HLib list after invalid walk");
+#endif
+        return nullptr;
+    }
+    if (!selected) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("UpdateTaskData_0: no suitable block; preserving current HLib list visited=%u", static_cast<unsigned>(visited));
+#endif
+        return nullptr;
+    }
     HLib::TaskData *const next = selected->next_ptr;
     HLib::TaskData *const previous = selected->prev_ptr;
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("UpdateTaskData_0: selected=%p prev=%p next=%p payload=%u", static_cast<void *>(selected),
+                 static_cast<void *>(previous), static_cast<void *>(next), static_cast<unsigned>(largestPayload));
+#endif
+    const auto validBlock = [arenaBegin, arenaEnd](const HLib::TaskData *block) {
+        const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(block);
+        return block && address >= arenaBegin && address <= arenaEnd - sizeof(HLib::TaskData) && (address & 31U) == 0;
+    };
+    if (!validBlock(previous) || !validBlock(next)) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("UpdateTaskData_0: selected links invalid; preserving current HLib list");
+#endif
+        return nullptr;
+    }
     g_pFirstTaskData = selected;
     g_pLastTaskData = next;
     g_pFirstTaskData_0 = selected;
@@ -255,6 +361,10 @@ void *UpdateTaskData_0() {
     next->next_ptr = nullptr;
     next->content_size = 0;
     g_pLastTaskData_0 = next;
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("UpdateTaskData_0: complete first=%p last=%p first0=%p last0=%p", static_cast<void *>(g_pFirstTaskData),
+                 static_cast<void *>(g_pLastTaskData), static_cast<void *>(g_pFirstTaskData_0), static_cast<void *>(g_pLastTaskData_0));
+#endif
     return selected + 1;
 }
 

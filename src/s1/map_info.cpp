@@ -6,9 +6,14 @@
 #include "s1/hlib.hpp"
 #include "s1/task/pack.hpp"
 
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
+
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <new>
 
 namespace shenmue::s1 {
 
@@ -111,24 +116,60 @@ void MAPINFO_Release() {
 }
 
 void *MAPINFO_Load() {
-    FileState *const file = Archive_GetNextUnusedFileState();
-    const char areaCharacters[4]{
-        static_cast<char>(g_areaId),
-        static_cast<char>(g_areaId >> 8),
-        static_cast<char>(g_areaId >> 16),
-        static_cast<char>(g_areaId >> 24),
-    };
-    char directory[64];
-    std::snprintf(directory, sizeof(directory), "scene/%02d/%c%c%c%c", g_sceneId, areaCharacters[0], areaCharacters[1], areaCharacters[2], areaCharacters[3]);
+    const char *stage = "begin";
+    try {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("MAPINFO_Load: begin scene=%d area=%08x", g_sceneId, static_cast<unsigned>(g_areaId));
+#endif
+        stage = "file-state";
+        FileState *const file = Archive_GetNextUnusedFileState();
+        if (!file) {
+#if defined(SHENMUE_HOST_PSP)
+            psp::BootLog("MAPINFO_Load: no free file state");
+#endif
+            return nullptr;
+        }
 
-    constexpr char filename[] = "MAPINFO.BIN";
-    PrepareDirectoryPathForFile(file, directory, filename);
-    const std::uint64_t size = OpenFileInternal(file->path);
-    void *const data = HLib_AllocHeapMemBlock(static_cast<std::int64_t>(size), static_cast<std::int32_t>(SHEN_NAME(INFO)));
-    OpenFile(file, data, static_cast<std::int32_t>(size));
-    g_mapInfoFileState = file;
-    g_mapInfoSize = static_cast<std::uint32_t>(size);
-    return data;
+        const char areaCharacters[4]{
+            static_cast<char>(g_areaId),
+            static_cast<char>(g_areaId >> 8),
+            static_cast<char>(g_areaId >> 16),
+            static_cast<char>(g_areaId >> 24),
+        };
+        char directory[64];
+        std::snprintf(directory, sizeof(directory), "scene/%02d/%c%c%c%c", g_sceneId, areaCharacters[0], areaCharacters[1], areaCharacters[2], areaCharacters[3]);
+
+        constexpr char filename[] = "MAPINFO.BIN";
+        stage = "prepare-path";
+        PrepareDirectoryPathForFile(file, directory, filename);
+        stage = "file-size";
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("MAPINFO_Load: size lookup path=%s", file->path);
+#endif
+        const std::uint64_t size = OpenFileInternal(file->path);
+        stage = "allocate";
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("MAPINFO_Load: file size=%llu", static_cast<unsigned long long>(size));
+#endif
+        void *const data = HLib_AllocHeapMemBlock(static_cast<std::int64_t>(size), static_cast<std::int32_t>(SHEN_NAME(INFO)));
+        stage = "read";
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("MAPINFO_Load: allocation=%p size=%llu", data, static_cast<unsigned long long>(size));
+#endif
+        OpenFile(file, data, static_cast<std::int32_t>(size));
+        stage = "publish";
+        g_mapInfoFileState = file;
+        g_mapInfoSize = static_cast<std::uint32_t>(size);
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("MAPINFO_Load: complete data=%p size=%u", data, static_cast<unsigned>(g_mapInfoSize));
+#endif
+        return data;
+    } catch (const std::bad_alloc &) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("MAPINFO_Load: bad_alloc stage=%s scene=%d area=%08x", stage, g_sceneId, static_cast<unsigned>(g_areaId));
+#endif
+        throw;
+    }
 }
 
 } // namespace shenmue::s1

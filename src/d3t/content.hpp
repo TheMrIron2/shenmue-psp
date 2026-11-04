@@ -73,7 +73,12 @@ static_assert(offsetof(D3TContentSlot, bypassArchiveLookup) == 0x1160);
 static_assert(offsetof(D3TContentSlot, option) == 0x1162);
 static_assert(sizeof(D3TContentSlot) == 0x1168);
 
-extern std::array<D3TContentSlot, 8192> g_d3tContentSlots;
+#if defined(SHENMUE_HOST_PSP)
+inline constexpr std::size_t kD3TContentSlotCapacity = 32;
+#else
+inline constexpr std::size_t kD3TContentSlotCapacity = 8192;
+#endif
+extern std::array<D3TContentSlot, kD3TContentSlotCapacity> g_d3tContentSlots;
 extern std::uint32_t g_pendingContentRemappingCount;
 
 std::int64_t PushShaderLoadToThreadQueue(const D3TShaderLoadTask *task);

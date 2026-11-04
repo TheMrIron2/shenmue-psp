@@ -34,6 +34,9 @@ inline std::FILE *D3T_OpenDebugLogFile() {
         const DWORD length = GetModuleFileNameA(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
         if (length == 0 || length >= executable.size())
             return static_cast<std::FILE *>(nullptr);
+#elif defined(SHENMUE_HOST_PSP)
+        // No /proc/self/exe on the PSP; disable per-executable debug log files.
+        return static_cast<std::FILE *>(nullptr);
 #else
         const ssize_t length = readlink("/proc/self/exe", executable.data(), executable.size() - 1);
         if (length <= 0 || static_cast<std::size_t>(length) >= executable.size())

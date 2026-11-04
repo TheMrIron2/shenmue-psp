@@ -226,7 +226,11 @@ void SelectMonitorForDisplay(DisplaySettings *settings) {
     settings->tertiaryFlag = 0;
     settings->reserved_17 = 0;
     settings->bloomMode = 2;
+#if defined(SHENMUE_HOST_PSP)
+    settings->aspectRatio = 0;
+#else
     settings->aspectRatio = 1;
+#endif
     settings->gamma = 0.5f;
     settings->contrast = 0.5f;
     settings->uiDisplayArea = 1.0f;

@@ -28,6 +28,10 @@
 #include "s1/scene.hpp"
 #include "s1/skinning_cache.hpp"
 
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -38,6 +42,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -48,7 +53,149 @@ namespace shenmue::s1 {
 namespace {
 std::byte *g_mt5ModelBaseOverride = nullptr;
 const Matrix4x4 *g_mt5RootTransform = nullptr;
-std::unordered_map<const void *, std::byte *> g_mt5ModelBases;
+
+class ModelBaseRegistry {
+  public:
+    void clear() {
+#if defined(SHENMUE_HOST_PSP)
+        m_entries.fill({});
+        m_size = 0;
+#else
+        m_entries.clear();
+#endif
+    }
+
+    std::size_t size() const {
+#if defined(SHENMUE_HOST_PSP)
+        return m_size;
+#else
+        return m_entries.size();
+#endif
+    }
+
+    bool contains(const void *node) const {
+#if defined(SHENMUE_HOST_PSP)
+        return findIndex(node) != kCapacity;
+#else
+        return m_entries.contains(node);
+#endif
+    }
+
+    bool get(const void *node, std::byte *&base) const {
+#if defined(SHENMUE_HOST_PSP)
+        const std::size_t index = findIndex(node);
+        if (index == kCapacity)
+            return false;
+        base = m_entries[index].base;
+        return true;
+#else
+        const auto found = m_entries.find(node);
+        if (found == m_entries.end())
+            return false;
+        base = found->second;
+        return true;
+#endif
+    }
+
+    void set(const void *node, std::byte *base) {
+        if (!node)
+            return;
+#if defined(SHENMUE_HOST_PSP)
+        const std::size_t existing = findIndex(node);
+        if (existing != kCapacity) {
+            m_entries[existing].base = base;
+            return;
+        }
+
+        std::size_t firstDeleted = kCapacity;
+        std::size_t index = hash(node) & (kCapacity - 1);
+        for (std::size_t probe = 0; probe < kCapacity; ++probe) {
+            Entry &entry = m_entries[index];
+            if (entry.state == 2 && firstDeleted == kCapacity)
+                firstDeleted = index;
+            if (entry.state == 0) {
+                const std::size_t target = firstDeleted == kCapacity ? index : firstDeleted;
+                m_entries[target] = {node, base, 1};
+                ++m_size;
+                return;
+            }
+            index = (index + 1) & (kCapacity - 1);
+        }
+        if (firstDeleted != kCapacity) {
+            m_entries[firstDeleted] = {node, base, 1};
+            ++m_size;
+            return;
+        }
+        throw std::bad_alloc{};
+#else
+        m_entries[node] = base;
+#endif
+    }
+
+    void eraseRange(std::uintptr_t begin, std::uintptr_t end) {
+        if (!begin || end <= begin)
+            return;
+#if defined(SHENMUE_HOST_PSP)
+        for (Entry &entry : m_entries) {
+            if (entry.state != 1)
+                continue;
+            const auto address = reinterpret_cast<std::uintptr_t>(entry.node);
+            if (address >= begin && address < end) {
+                entry = {nullptr, nullptr, 2};
+                --m_size;
+            }
+        }
+#else
+        for (auto entry = m_entries.begin(); entry != m_entries.end();) {
+            const auto address = reinterpret_cast<std::uintptr_t>(entry->first);
+            if (address >= begin && address < end)
+                entry = m_entries.erase(entry);
+            else
+                ++entry;
+        }
+#endif
+    }
+
+  private:
+#if defined(SHENMUE_HOST_PSP)
+    static constexpr std::size_t kCapacity = 32768;
+    struct Entry {
+        const void *node{};
+        std::byte *base{};
+        std::uint8_t state{};
+    };
+
+    static std::size_t hash(const void *node) {
+        std::uintptr_t value = reinterpret_cast<std::uintptr_t>(node) >> 4;
+        value ^= value >> 11;
+        value *= static_cast<std::uintptr_t>(0x9e3779b1U);
+        value ^= value >> 16;
+        return static_cast<std::size_t>(value);
+    }
+
+    std::size_t findIndex(const void *node) const {
+        if (!node)
+            return kCapacity;
+        std::size_t index = hash(node) & (kCapacity - 1);
+        for (std::size_t probe = 0; probe < kCapacity; ++probe) {
+            const Entry &entry = m_entries[index];
+            if (entry.state == 0)
+                return kCapacity;
+            if (entry.state == 1 && entry.node == node)
+                return index;
+            index = (index + 1) & (kCapacity - 1);
+        }
+        return kCapacity;
+    }
+
+    std::array<Entry, kCapacity> m_entries{};
+    std::size_t m_size{};
+#else
+    std::unordered_map<const void *, std::byte *> m_entries;
+#endif
+};
+
+ModelBaseRegistry g_mt5ModelBases;
 struct Mt5CopiedBinding {
     void *binding;
     std::byte *modelBase;
@@ -70,13 +217,7 @@ void MT5_UnregisterOwnershipRange(const void *first, std::uintptr_t end) {
     const auto begin = reinterpret_cast<std::uintptr_t>(first);
     if (!begin || end <= begin)
         return;
-    for (auto entry = g_mt5ModelBases.begin(); entry != g_mt5ModelBases.end();) {
-        const auto address = reinterpret_cast<std::uintptr_t>(entry->first);
-        if (address >= begin && address < end)
-            entry = g_mt5ModelBases.erase(entry);
-        else
-            ++entry;
-    }
+    g_mt5ModelBases.eraseRange(begin, end);
     for (auto entry = g_mt5CopiedBindings.begin(); entry != g_mt5CopiedBindings.end();) {
         const auto address = reinterpret_cast<std::uintptr_t>(entry->first);
         if (address >= begin && address < end)
@@ -103,7 +244,7 @@ void MT5_ResetModelOwnershipRegistry() {
     g_mt5TemporaryTaskRelativeNodes.clear();
 }
 bool MT5_IsRegisteredModelNode(const void *node) {
-    return node && g_mt5ModelBases.find(node) != g_mt5ModelBases.end();
+    return g_mt5ModelBases.contains(node);
 }
 
 void MT5_UnregisterModelAllocation(const void *payload) {
@@ -121,8 +262,8 @@ std::byte *MT5_SetModelBaseOverride(std::byte *modelBase) {
 }
 
 std::byte *MT5_ModelBaseForNode(const void *node) {
-    const auto found = g_mt5ModelBases.find(node);
-    return found == g_mt5ModelBases.end() ? g_pCurrentTaskData : found->second;
+    std::byte *base = nullptr;
+    return g_mt5ModelBases.get(node, base) ? base : g_pCurrentTaskData;
 }
 
 void *MT5_SceneBindingForNode(const void *nodePointer, std::byte **modelBase) {
@@ -411,7 +552,7 @@ void *hmdlCloneNodeTree(const void *sourceNode) {
 
     Mt5Node *cursor = allocation;
     Mt5Node *const root = hmdlAppendNodeChain(source, sourceBase, cursor, nullptr);
-    g_mt5ModelBases[root] = g_pCurrentTaskData;
+    g_mt5ModelBases.set(root, g_pCurrentTaskData);
     return root;
 }
 
@@ -466,7 +607,26 @@ void MT5_PrepassNodeTreeTexturesAndStrips(void **node, std::int32_t *textureIds,
     // Packed HMDL offsets are relative to the owning model allocation for
     // every node, not just the root. Runtime clip records retain arbitrary
     // child-node pointers, so preserve that ownership for those pointers too.
-    g_mt5ModelBases[current] = MT5_ModelBase();
+    try {
+        g_mt5ModelBases.set(current, MT5_ModelBase());
+    } catch (const std::bad_alloc &) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("MT5: ownership registry bad_alloc node=%p depth=%u entries=%u image=%s", static_cast<void *>(current),
+            depth ? static_cast<unsigned>(*depth) : 0U, static_cast<unsigned>(g_mt5ModelBases.size()),
+            g_globalEntityName ? g_globalEntityName : "<null>");
+        psp::BootLogHeap("MT5 node ownership registry failure");
+#endif
+        throw;
+    }
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t tracedYkbNodes = 0;
+    if (g_globalEntityName && std::strstr(g_globalEntityName, "YKB_M")) {
+        ++tracedYkbNodes;
+        if ((tracedYkbNodes & 0x7fU) == 0)
+            psp::BootLog("MT5: YKB node prepass progress nodes=%u entries=%u depth=%u", static_cast<unsigned>(tracedYkbNodes),
+                static_cast<unsigned>(g_mt5ModelBases.size()), depth ? static_cast<unsigned>(*depth) : 0U);
+    }
+#endif
     Matrix4x4 *temporaryMatrix = nullptr;
 
     if (*depth != 0) {
@@ -489,7 +649,17 @@ void MT5_PrepassNodeTreeTexturesAndStrips(void **node, std::int32_t *textureIds,
     if (current->sceneBindingOffset) {
         auto *const binding = reinterpret_cast<std::uint32_t *>(MT5_ModelBase() + current->sceneBindingOffset);
         if (*binding != 1024) {
-            MT5_ReadMeshStrip(node, textureIds, 0);
+            try {
+                MT5_ReadMeshStrip(node, textureIds, 0);
+            } catch (const std::bad_alloc &) {
+#if defined(SHENMUE_HOST_PSP)
+                psp::BootLog("MT5: mesh strip bad_alloc node=%p depth=%u entries=%u image=%s", static_cast<void *>(current),
+                    depth ? static_cast<unsigned>(*depth) : 0U, static_cast<unsigned>(g_mt5ModelBases.size()),
+                    g_globalEntityName ? g_globalEntityName : "<null>");
+                psp::BootLogHeap("MT5 mesh strip allocation failure");
+#endif
+                throw;
+            }
         }
     }
 
@@ -513,6 +683,17 @@ void MT5_PrepassNodeTreeTexturesAndStrips(void **node, std::int32_t *textureIds,
 PackModel *MT5_InitRawModelAndTextures(void *fileData, const char *entityName, const char *remapContext) {
     if (!fileData)
         return nullptr;
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t tracedRawModels = 0;
+    const bool traceYkbModel = entityName && std::strstr(entityName, "YKB_M");
+    const bool traceRawModel = tracedRawModels < 8 || traceYkbModel;
+    if (traceRawModel) {
+        if (tracedRawModels < 8)
+            ++tracedRawModels;
+        psp::BootLog("MT5: raw model begin image=%s data=%p registered=%u", entityName ? entityName : "<null>", fileData,
+            static_cast<unsigned>(g_mt5ModelBases.size()));
+    }
+#endif
     constexpr std::uint32_t kHrcm = SHEN_NAME(HRCM);
     constexpr std::uint32_t kTexdChunk = SHEN_NAME(TEXD);
     constexpr std::uint32_t kTexnChunk = SHEN_NAME(TEXN);
@@ -581,6 +762,13 @@ PackModel *MT5_InitRawModelAndTextures(void *fileData, const char *entityName, c
         }
         chunk = reinterpret_cast<PakChunkHeader *>(chunkBytes + chunk->size);
     }
+#if defined(SHENMUE_HOST_PSP)
+    if (traceRawModel) {
+        psp::BootLog("MT5: raw chunks complete image=%s root=%p relocated=%u textures=%u", entityName ? entityName : "<null>", static_cast<void *>(root),
+            relocated ? 1U : 0U, static_cast<unsigned>(textureCount));
+        psp::BootLogHeap("MT5 raw chunks complete");
+    }
+#endif
     if (!root || !relocated)
         return nullptr;
 
@@ -609,9 +797,31 @@ PackModel *MT5_InitRawModelAndTextures(void *fileData, const char *entityName, c
     g_globalEntityName = const_cast<char *>(entityName);
     std::uint32_t depth = 0;
     void *rootPointer = root;
-    MT5_PrepassNodeTreeTexturesAndStrips(&rootPointer, textureCount ? textureIds.data() : nullptr, &depth);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceRawModel) {
+        psp::BootLog("MT5: mesh prepass begin image=%s modelBases=%u", entityName ? entityName : "<null>", static_cast<unsigned>(g_mt5ModelBases.size()));
+        psp::BootLogHeap("MT5 mesh prepass begin");
+    }
+#endif
+    try {
+        MT5_PrepassNodeTreeTexturesAndStrips(&rootPointer, textureCount ? textureIds.data() : nullptr, &depth);
+    } catch (const std::bad_alloc &) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("MT5: mesh prepass bad_alloc image=%s modelBases=%u", entityName ? entityName : "<null>", static_cast<unsigned>(g_mt5ModelBases.size()));
+        psp::BootLogHeap("MT5 mesh prepass allocation failure");
+#endif
+        throw;
+    }
+#if defined(SHENMUE_HOST_PSP)
+    if (traceRawModel)
+        psp::BootLog("MT5: mesh prepass complete image=%s modelBases=%u", entityName ? entityName : "<null>", static_cast<unsigned>(g_mt5ModelBases.size()));
+#endif
     g_globalEntityName = nullptr;
-    g_mt5ModelBases[root] = taskBase;
+    g_mt5ModelBases.set(root, taskBase);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceRawModel)
+        psp::BootLog("MT5: root ownership registered image=%s modelBases=%u", entityName ? entityName : "<null>", static_cast<unsigned>(g_mt5ModelBases.size()));
+#endif
     MT5_SetModelBaseOverride(previousBase);
     return model;
 }
@@ -694,7 +904,7 @@ PackModel *PAKF_Mallocs(PakChunkHeader *pakf, std::int32_t *textureIds, void *, 
     // allocation which owned the PAKS while PAKF_Mallocs relocated it.  The
     // model is submitted later from a different HLib task, so retain that base
     // with the root instead of depending on the current task-data global.
-    g_mt5ModelBases[model] = g_pCurrentTaskData;
+    g_mt5ModelBases.set(model, g_pCurrentTaskData);
 
     g_globalEntityName = entityName;
     std::uint32_t depth = 0;
@@ -836,7 +1046,7 @@ PackModel *MT5_LoadPackModel(const char *rootDirectory, const char *filename) {
 RenderArrayEntry *CheckRenderArrayEntryGeneration(std::uint32_t value) {
     if (!g_renderPacketStorage)
         return nullptr;
-    constexpr std::uint32_t kIndexMask = 0x3ff;
+    constexpr std::uint32_t kIndexMask = kHmdlTableMask;
     constexpr std::uint32_t kGenerationMask = 0xfffffc00;
     constexpr std::size_t kEntryStride = 0x85f8;
     constexpr std::size_t kGenerationOffset = 0x217e000;
@@ -851,7 +1061,7 @@ RenderArrayEntry *CheckRenderArrayEntryGeneration(std::uint32_t value) {
 }
 
 RenderArrayEntry *GetRenderArrayEntry(std::uint32_t index) {
-    if (index >= 1024 || !g_renderLookupStorage)
+    if (index >= kHmdlEntryCapacity || !g_renderLookupStorage)
         return nullptr;
 
     const auto *const storage = static_cast<const std::byte *>(g_renderLookupStorage);
@@ -863,12 +1073,12 @@ RenderArrayEntry *GetRenderArrayEntry(std::uint32_t index) {
     if (hash == 0)
         return nullptr;
 
-    std::uint32_t slot = hash & 0x3ffU;
+    std::uint32_t slot = hash & kHmdlTableMask;
     while (hashes[slot] != hash) {
         const std::uint16_t distance = probes[slot];
         if (distance == 0)
             return CheckRenderArrayEntryGeneration(0);
-        slot = (slot + distance) & 0x3ffU;
+        slot = (slot + distance) & kHmdlTableMask;
     }
     return CheckRenderArrayEntryGeneration(values[slot]);
 }
@@ -961,17 +1171,17 @@ void RemoveLargeHmdlMappingsTo(void *mappingStorage, std::uintptr_t handle) {
 
 bool InsertHmdlEntryLookup(std::uint32_t id, std::uint32_t hash) {
     HmdlEntryLookup &lookup = *static_cast<HmdlEntryLookup *>(g_renderLookupStorage);
-    return InsertProbedHash(lookup, 0x3ffU, 1024, hash, [&lookup, id](std::uint32_t slot) { lookup.values[slot] = id; });
+    return InsertProbedHash(lookup, kHmdlTableMask, kHmdlTableCapacity, hash, [&lookup, id](std::uint32_t slot) { lookup.values[slot] = id; });
 }
 
 bool RemoveHmdlEntryLookup(std::uint32_t hash) {
     HmdlEntryLookup &lookup = *static_cast<HmdlEntryLookup *>(g_renderLookupStorage);
-    return RemoveProbedHash(lookup, 0x3ffU, hash, [&lookup](std::uint32_t slot) { lookup.values[slot] = 0; });
+    return RemoveProbedHash(lookup, kHmdlTableMask, hash, [&lookup](std::uint32_t slot) { lookup.values[slot] = 0; });
 }
 
 bool InsertHmdlRuntimeObject(const RenderArrayOwner &record, std::uint32_t hash) {
     HmdlObjectStorage &objects = *static_cast<HmdlObjectStorage *>(g_renderObjectStorage);
-    return InsertProbedHash(objects, 0x3ffU, 1024, hash, [&objects, &record](std::uint32_t slot) { objects.objects[slot] = record; });
+    return InsertProbedHash(objects, kHmdlTableMask, kHmdlTableCapacity, hash, [&objects, &record](std::uint32_t slot) { objects.objects[slot] = record; });
 }
 
 
@@ -1224,7 +1434,7 @@ bool RetireHmdlRenderEntry(RenderArrayEntry &entry) {
         return true;
     }
     HmdlEntryStorage &storage = *static_cast<HmdlEntryStorage *>(g_renderPacketStorage);
-    std::uint32_t &generation = storage.generations[entry.id & 0x3ffU];
+    std::uint32_t &generation = storage.generations[entry.id & kHmdlTableMask];
     if (generation == (entry.id & 0xfffffc00U))
         generation &= 0x7fffffffU;
     std::memset(&entry, 0, sizeof(entry));
@@ -1295,7 +1505,7 @@ bool InsertLargeHmdlMapping(void *mappingStorage, std::uintptr_t handle, std::ui
 
 bool RemoveHmdlRuntimeObject(std::uint32_t hash) {
     HmdlObjectStorage &objects = *static_cast<HmdlObjectStorage *>(g_renderObjectStorage);
-    return RemoveProbedHash(objects, 0x3ffU, hash, [&objects](std::uint32_t slot) { objects.objects[slot] = {}; });
+    return RemoveProbedHash(objects, kHmdlTableMask, hash, [&objects](std::uint32_t slot) { objects.objects[slot] = {}; });
 }
 
 
@@ -1392,14 +1602,14 @@ bool FileRead_ALL(std::uintptr_t handle, const char *path, std::uint32_t instanc
     const std::uint32_t pathHash = d3t_GenerateHash(resolved);
     HmdlObjectStorage &objects = *static_cast<HmdlObjectStorage *>(g_renderObjectStorage);
     RenderArrayOwner *shared = nullptr;
-    for (std::uint32_t slot = 0; slot < 1024; ++slot) {
+    for (std::uint32_t slot = 0; slot < kHmdlTableCapacity; ++slot) {
         if (objects.hashes[slot] && objects.objects[slot].pathHash == pathHash) {
             shared = &objects.objects[slot];
             break;
         }
     }
     if ((flags & 0x800U) != 0U || !shared) {
-        if (objects.count >= 1024)
+        if (objects.count >= kHmdlTableCapacity)
             return false;
         RenderArrayOwner record = BuildHmdlRuntimeObjectRecord(handle, resolved, instanceHandle, flags);
         record.remapType = remapType;
@@ -1425,12 +1635,12 @@ std::byte *ResolveHmdlEntry(std::uintptr_t handle) {
     handle = LookupLargeHmdlMapping(g_renderIndexStorageA, handle);
     const HmdlEntryLookup &lookup = *static_cast<const HmdlEntryLookup *>(g_renderLookupStorage);
     const std::uint32_t hash = NormalizeHmdlHandle(handle);
-    std::uint32_t slot = hash & 0x3ffU;
+    std::uint32_t slot = hash & kHmdlTableMask;
     while (lookup.hashes[slot] != hash) {
         const std::uint16_t distance = lookup.probes[slot];
         if (distance == 0)
             return nullptr;
-        slot = (slot + distance) & 0x3ffU;
+        slot = (slot + distance) & kHmdlTableMask;
     }
     return reinterpret_cast<std::byte *>(CheckRenderArrayEntryGeneration(lookup.values[slot]));
 }
@@ -1442,12 +1652,12 @@ std::byte *ResolveHmdlRuntimeObject(std::uintptr_t handle) {
     HmdlObjectStorage &objects = *static_cast<HmdlObjectStorage *>(g_renderObjectStorage);
     const std::uint32_t hash = NormalizeHmdlHandle(mapped);
     if (hash != 0) {
-        std::uint32_t slot = hash & 0x3ffU;
+        std::uint32_t slot = hash & kHmdlTableMask;
         while (objects.hashes[slot] != hash) {
             const std::uint16_t distance = objects.probes[slot];
             if (distance == 0)
                 break;
-            slot = (slot + distance) & 0x3ffU;
+            slot = (slot + distance) & kHmdlTableMask;
         }
         if (objects.hashes[slot] == hash)
             return reinterpret_cast<std::byte *>(&objects.objects[slot]);
@@ -1500,7 +1710,7 @@ bool SetupEngineObject(std::uintptr_t modelFileData, std::uintptr_t modelData, s
         }
     }
     if (!entry) {
-        if (static_cast<const HmdlEntryLookup *>(g_renderLookupStorage)->count >= 1024)
+        if (static_cast<const HmdlEntryLookup *>(g_renderLookupStorage)->count >= kHmdlLookupCapacity)
             return false;
         HmdlEntryStorage &storage = *static_cast<HmdlEntryStorage *>(g_renderPacketStorage);
         std::uint32_t slot = storage.cursor;
@@ -1509,14 +1719,14 @@ bool SetupEngineObject(std::uintptr_t modelFileData, std::uintptr_t modelData, s
             counter = storage.generations[slot] >> 10U;
             if (counter < 0x200000U)
                 break;
-            slot = (slot + 1) & 0x3ffU;
+            slot = (slot + 1) & kHmdlTableMask;
             if (slot == storage.cursor)
                 return false;
         }
         const std::uint32_t next = counter + 1;
         const std::uint32_t generation = static_cast<std::uint32_t>((((next & 0xffe00000U) != 0x200000U ? next : 1U) | 0xffe00000U) << 10U);
         storage.generations[slot] = generation;
-        storage.cursor = (slot + 1) & 0x3ffU;
+        storage.cursor = (slot + 1) & kHmdlTableMask;
         const std::uint32_t id = slot | generation;
         if (!id)
             return false;
@@ -1561,7 +1771,7 @@ std::uint8_t ProcessHmdlResourceTransitions(std::int32_t setupShaders) {
         return g_hmdlEntryDirty;
     bool settled = true;
     HmdlEntryStorage &storage = *static_cast<HmdlEntryStorage *>(g_renderPacketStorage);
-    for (std::uint32_t slot = 0; slot < 1024; ++slot) {
+    for (std::uint32_t slot = 0; slot < kHmdlTableCapacity; ++slot) {
         if (storage.generations[slot] < 0x80000000U)
             continue;
         RenderArrayEntry &entry = storage.entries[slot];
@@ -1582,7 +1792,7 @@ std::uint8_t ProcessHmdlResourceTransitions(std::int32_t setupShaders) {
         }
     }
     HmdlObjectStorage &objects = *static_cast<HmdlObjectStorage *>(g_renderObjectStorage);
-    for (std::uint32_t slot = 0; slot < 1024; ++slot) {
+    for (std::uint32_t slot = 0; slot < kHmdlTableCapacity; ++slot) {
         if (!objects.hashes[slot])
             continue;
         RenderArrayOwner &object = objects.objects[slot];

@@ -5,6 +5,10 @@
 #include "s1/motion_registry.hpp"
 #include "s1/task/wexe.hpp"
 
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -91,9 +95,27 @@ std::int32_t readInt32(const std::byte *address) {
 void *copyColdStorageBlock(const std::byte *base, std::int32_t selector, std::size_t offsetField, std::size_t sizeField, std::int32_t token) {
     const std::int32_t offset = readInt32(base + selector + offsetField);
     const std::int32_t signedSize = readInt32(base + selector + sizeField);
+    if (offset < 0 || signedSize < 0) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("InitMain: cold block invalid token=%08x offset=%d size=%d", static_cast<unsigned>(token), offset, signedSize);
+#endif
+        return nullptr;
+    }
     const auto size = static_cast<std::size_t>(static_cast<std::int64_t>(signedSize));
     void *const destination = HLib_AllocHeapMemBlock(static_cast<std::int64_t>(size), token);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: cold block token=%08x offset=%d size=%d dst=%p", static_cast<unsigned>(token), offset, signedSize, destination);
+#endif
+    if (!destination) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("InitMain: cold block allocation failed token=%08x size=%d", static_cast<unsigned>(token), signedSize);
+#endif
+        return nullptr;
+    }
     std::memcpy(destination, base + offset, size);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: cold block token=%08x copied", static_cast<unsigned>(token));
+#endif
     return destination;
 }
 
@@ -164,13 +186,22 @@ HLib::TaskData *SetupSTCH() {
 
     block->taskToken = kStch;
     block->status = HLIB_USED_TOKEN.name;
-    block->alignment = 0;
+    // The map transition calls HLib_FreeUseSpaces before allocating its scene.
+    // STCH is the scene-transient scratch pool and must survive that sweep.
+    block->alignment = 1;
     g_pSTCH = block + 1;
     g_TotalSceneFileReadBytes = 0;
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("SetupSTCH: reserved block=%p data=%p content=%u alignment=%u", static_cast<void *>(block), g_pSTCH,
+                 static_cast<unsigned>(block->content_size), static_cast<unsigned>(block->alignment));
+#endif
     return block + 1;
 }
 
 void AllocFONTs() {
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: AllocFONTs begin");
+#endif
     constexpr std::int64_t kBlockSize = 0xa0;
 
     HLib::TaskData *block = g_pFirstTaskData;
@@ -202,6 +233,15 @@ void AllocFONTs() {
     }
 
     g_pFont = font;
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: font descriptor=%p", font);
+#endif
+    if (!font) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("InitMain: font descriptor allocation failed");
+#endif
+        return;
+    }
     std::uint64_t zero = 0;
     for (const std::size_t offset : {0x18U, 0x20U, 0x28U, 0x30U, 0x38U, 0x40U}) {
         std::memcpy(font + offset, &zero, sizeof(zero));
@@ -223,6 +263,12 @@ void AllocFONTs() {
 
 void LoadFont(const char *filename) {
     auto *const font = static_cast<std::byte *>(g_pFont);
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t traceCount = 0;
+    const bool shouldTrace = traceCount++ < 64;
+    if (shouldTrace)
+        psp::BootLog("LoadFont: begin call=%u file=%s font=%p", static_cast<unsigned>(traceCount), filename ? filename : "(null)", font);
+#endif
     auto *const currentName = reinterpret_cast<char *>(font + 0x18);
     if (*currentName) {
         const char *left = filename;
@@ -236,13 +282,26 @@ void LoadFont(const char *filename) {
                 b = static_cast<char>(b - 32);
             if (a != b)
                 break;
-            if (!a)
+            if (!a) {
+#if defined(SHENMUE_HOST_PSP)
+                if (shouldTrace)
+                    psp::BootLog("LoadFont: already loaded file=%s", filename);
+#endif
                 return;
+            }
         }
     }
     void *kanji = nullptr;
     std::memcpy(&kanji, font + 0x08, sizeof(kanji));
-    shenLoadFile("misc", filename, kanji, 0x55c46);
+#if defined(SHENMUE_HOST_PSP)
+    if (shouldTrace)
+        psp::BootLog("LoadFont: read file=%s destination=%p bytes=%08x", filename ? filename : "(null)", kanji, 0x55c46U);
+#endif
+    const std::int64_t loaded = shenLoadFile("misc", filename, kanji, 0x55c46);
+#if defined(SHENMUE_HOST_PSP)
+    if (shouldTrace)
+        psp::BootLog("LoadFont: read returned file=%s result=%lld", filename ? filename : "(null)", static_cast<long long>(loaded));
+#endif
     std::strcpy(currentName, filename);
 }
 
@@ -409,7 +468,14 @@ void ReadColdStorage() {
         destination = block + 1;
     }
     g_mobjData = destination;
-    if (!destination || !shenLoadFile("misc", "COLD.BIN", destination, -1)) {
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: cold storage candidate=%p block=%p", destination, static_cast<void *>(block));
+#endif
+    const bool loaded = destination && shenLoadFile("misc", "COLD.BIN", destination, -1);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: cold storage read loaded=%d", loaded ? 1 : 0);
+#endif
+    if (!loaded) {
         if (destination) {
             HLib_FreeTaskData(static_cast<HLib::TaskData *>(destination), 0);
         }
@@ -418,8 +484,14 @@ void ReadColdStorage() {
 }
 
 void InitMain() {
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: begin build=%s %s", __DATE__, __TIME__);
+#endif
     InitSettings();
     InitSpriteBank(1);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: settings and sprite bank ready");
+#endif
 
     char path[256];
     LookupDirectoryEntry("/MISC", 0, 0);
@@ -440,14 +512,37 @@ void InitMain() {
     std::sprintf(path, "/scene/%02d/JHD0", g_actNumber);
     LookupDirectoryEntry(path, 0, 0);
 
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: directory lookups complete");
+#endif
     ReadColdStorage();
-    if (!g_mobjData)
+    if (!g_mobjData) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("InitMain: cold storage unavailable; returning");
+#endif
         return;
-    SetupSTCH();
+#if defined(SHENMUE_HOST_PSP)
+    }
+    psp::BootLog("InitMain: cold storage loaded; setup begin");
+#else
+    }
+#endif
     LoadShadowMesh();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: shadow mesh ready");
+#endif
     SetupMoveShadow();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: move shadow ready");
+#endif
     ReadMOTI();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: motion data ready ptr=%p size=%u", g_motiData, static_cast<unsigned>(g_motiSize));
+#endif
     AllocFONTs();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: fonts ready");
+#endif
 
     g_cloudNode = nullptr;
     g_rainNode = nullptr;
@@ -460,6 +555,9 @@ void InitMain() {
     g_forecastNode = nullptr;
     g_forecastCount = 0;
     AllocateWEDT();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: weather data ready");
+#endif
 
     auto *const mobj = static_cast<std::byte *>(g_mobjData);
     const std::byte *const tableBase = mobj + 0x10;
@@ -473,16 +571,50 @@ void InitMain() {
         g_hndbSize = size > 0 ? static_cast<std::uint32_t>(size) : 0;
     }
 
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: InitBGDT begin");
+#endif
     InitBGDT();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: InitBGDT returned");
+    psp::BootLog("InitMain: free MOBJ begin");
+#endif
     HLib_FreeTaskData(static_cast<HLib::TaskData *>(g_mobjData), 0);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: free MOBJ returned");
+    psp::BootLog("InitMain: PreLoad_InitCycleman begin");
+#endif
     PreLoad_InitCycleman();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: PreLoad_InitCycleman returned");
+    psp::BootLog("InitMain: SelectAudio begin");
+#endif
     SelectAudio();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: SelectAudio returned");
+    psp::BootLog("InitMain: UpdateTaskData_0 begin");
+#endif
     UpdateTaskData_0();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: UpdateTaskData_0 returned");
+#endif
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: task data prepared first=%p last=%p first0=%p last0=%p", static_cast<void *>(g_pFirstTaskData),
+                 static_cast<void *>(g_pLastTaskData), static_cast<void *>(g_pFirstTaskData_0), static_cast<void *>(g_pLastTaskData_0));
+#endif
 
     HLib::TaskData *const arenaBase = g_pFirstTaskData->prev_ptr;
     if ((arenaBase->alignment & 0x80) != 0 && (g_pLastTaskData->alignment & 0x80) != 0) {
         HLib_Init();
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("InitMain: HLib arena reset first=%p last=%p first0=%p last0=%p", static_cast<void *>(g_pFirstTaskData),
+                     static_cast<void *>(g_pLastTaskData), static_cast<void *>(g_pFirstTaskData_0), static_cast<void *>(g_pLastTaskData_0));
+#endif
     } else {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("InitMain: preserving HLib arena base=%p first=%p last=%p", static_cast<void *>(arenaBase),
+                     static_cast<void *>(g_pFirstTaskData), static_cast<void *>(g_pLastTaskData));
+#endif
         HLib::TaskData *const freeBlock = arenaBase->next_ptr;
         freeBlock->taskToken = SHEN_NAME(fREe);
         freeBlock->content_size = reinterpret_cast<std::byte *>(g_pLastTaskData) - reinterpret_cast<std::byte *>(freeBlock);
@@ -491,6 +623,13 @@ void InitMain() {
         freeBlock->alignment = 0;
         g_pLastTaskData->prev_ptr = freeBlock;
     }
+
+    // HLib_Init can reset the arena above. Reserve the scene scratch pool only
+    // after that reset so g_pSTCH continues to point at a live HLib block.
+    SetupSTCH();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: STCH ready after HLib setup");
+#endif
 
     for (std::int32_t index = 0; index < 256; ++index) {
         UiAnimationSlot &slot = g_uiAnimationSlots[index];
@@ -510,6 +649,10 @@ void InitMain() {
         }
     }
     InitializeUiIndexTables();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("InitMain: complete first=%p last=%p first0=%p last0=%p", static_cast<void *>(g_pFirstTaskData),
+                 static_cast<void *>(g_pLastTaskData), static_cast<void *>(g_pFirstTaskData_0), static_cast<void *>(g_pLastTaskData_0));
+#endif
 }
 
 } // namespace shenmue::s1

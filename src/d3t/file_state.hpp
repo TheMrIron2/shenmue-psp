@@ -17,7 +17,7 @@ static_assert(sizeof(FileState) == 0x110);
 static_assert(offsetof(FileState, handle) == 0x104);
 static_assert(offsetof(FileState, offset) == 0x108);
 
-extern std::array<FileState, 2048> g_files;
+extern std::array<FileState, 256> g_files;
 
 FileState *Archive_GetNextUnusedFileState();
 std::uint32_t AllocateFileLockHandle();

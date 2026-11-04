@@ -5,7 +5,10 @@
 
 namespace shenmue::s1 {
 
-std::int32_t LoadTEXN(void *texnData);
+enum class PspTextureStorage { Rgba8888, Swizzled16 };
+
+bool InitTextureLoader();
+std::int32_t LoadTEXN(void *texnData, bool retainPspPixels = false, std::uint16_t maxPspDimension = 0, PspTextureStorage pspStorage = PspTextureStorage::Rgba8888);
 
 
 

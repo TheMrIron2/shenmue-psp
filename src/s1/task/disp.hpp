@@ -26,6 +26,11 @@ extern std::int32_t g_displayDialogueSettingsDirty;
 extern std::int32_t g_displayGameplaySettingsDirty;
 extern std::int32_t g_70ManBattleLoadBeforeSettings;
 
+#if defined(SHENMUE_HOST_PSP)
+namespace dreamcast_frontend { struct TitleController; }
+const dreamcast_frontend::TitleController &DISP_GetTitleController() noexcept;
+bool DISP_AcceptTitleStart(std::uint16_t pressed) noexcept;
+#endif
 std::int32_t DISP_GetTitleState() noexcept;
 bool DISP_IsOnMainMenu() noexcept;
 struct ScenarioContext;

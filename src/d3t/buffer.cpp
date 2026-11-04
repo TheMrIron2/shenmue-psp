@@ -46,10 +46,17 @@ void *GetD3DDeviceContext(void *renderer) {
 
 namespace {
 
+#if defined(SHENMUE_HOST_PSP)
+// PSP: shrink the GPU-buffer handle table to fit the load budget.
+constexpr std::uint32_t kBufferIndexMask = 0xfffU;
+constexpr std::uint32_t kBufferTagMask = 0xfffff000U;
+constexpr std::size_t kBufferCount = 0x1000;
+#else
 constexpr std::uint32_t kBufferIndexMask = 0x7fffU;
 constexpr std::uint32_t kBufferTagMask = 0xffff8000U;
-constexpr std::uint32_t kBufferOccupied = 0x80000000U;
 constexpr std::size_t kBufferCount = 0x8000;
+#endif
+constexpr std::uint32_t kBufferOccupied = 0x80000000U;
 
 struct BufferStorage {
     std::array<BufferResource, kBufferCount> buffers{};
@@ -143,7 +150,11 @@ void ReleaseBufferResources(BufferResource &slot) {
 #endif
     if (slot.rawData) {
         FreeRawBuffer(slot.rawData);
+#if defined(SHENMUE_HOST_PSP)
+        slot.rawData = reinterpret_cast<void *>(static_cast<std::uintptr_t>(0xfefefefdU));
+#else
         slot.rawData = reinterpret_cast<void *>(std::uintptr_t{0xfefefefefefefefdULL});
+#endif
     }
 }
 

@@ -65,7 +65,18 @@ struct TaskData {
     std::int32_t alignment;
     void *task_data;
     std::uint8_t *data[2];
+#if defined(SHENMUE_HOST_PSP)
+    // The HLib allocator stores its next block at byte offsets rounded for a
+    // 64-byte header. Keep that header size on the 32-bit PSP ABI too.
+    std::uint32_t psp_reserved[4];
+#endif
 };
+
+#if defined(SHENMUE_HOST_PSP)
+using PspTaskDataSizeCheck = char[sizeof(TaskData) == 0x40 ? 1 : -1];
+using PspTaskDataContentOffsetCheck = char[offsetof(TaskData, content_size) == 0x08 ? 1 : -1];
+using PspTaskDataStatusOffsetCheck = char[offsetof(TaskData, status) == 0x18 ? 1 : -1];
+#endif
 
 using TaskCallback = void (*)(TaskData *);
 using TaskFunction = void (*)(std::int64_t);

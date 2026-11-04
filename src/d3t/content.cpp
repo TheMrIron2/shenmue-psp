@@ -11,6 +11,10 @@
 #include "d3t/render_handles.hpp"
 #include "d3t/threads.hpp"
 
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -25,7 +29,7 @@
 namespace shenmue::d3t {
 std::uint32_t g_pendingContentRemappingCount = 0;
 
-std::array<D3TContentSlot, 8192> g_d3tContentSlots{};
+std::array<D3TContentSlot, kD3TContentSlotCapacity> g_d3tContentSlots{};
 
 namespace {
 
@@ -306,7 +310,19 @@ bool processContentSlots() {
                 setState(slot, 10);
                 slot.taskHandle = d3t_QueueTask(&descriptor, sizeof(slotPointer));
             } else {
-
+#if defined(SHENMUE_HOST_PSP)
+                if (completionState == 13) {
+                    static std::uint32_t traceFailureCount = 0;
+                    if (traceFailureCount++ < 48)
+                        psp::BootLog("ContentLoad: failed path=%s resolved=%s archive=%08x", slot.sourcePath, slot.resolvedPath,
+                                     static_cast<unsigned>(slot.archiveHandle));
+                }
+#endif
+                if (completionState == 13) {
+                    const std::uint32_t releaseFlags = CSF_ReleaseRequested |
+                        (slot.archiveHandle == g_invalidArchiveHandle ? CSF_SkipBufferDetach : 0U);
+                    slot.flags.fetch_or(releaseFlags, std::memory_order_seq_cst);
+                }
                 completeContentSlot(slot);
             }
         }

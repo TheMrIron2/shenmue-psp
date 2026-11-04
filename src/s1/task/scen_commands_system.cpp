@@ -1987,6 +1987,13 @@ void Script_PrintDebugString(ScenarioContext *, void *rawParams) {
         return;
     const auto *const params = static_cast<const DebugStringParameters *>(rawParams);
     g_debugTextPosition = {params->x, params->y};
+    char formatted[256];
+#if defined(SHENMUE_HOST_PSP)
+    // The MIPS o32 `va_list` is a plain `void*`, so the SysV/Microsoft
+    // `va_list` reconstruction below does not apply. Debug text is emitted
+    // without substitutions on PSP.
+    std::snprintf(formatted, sizeof(formatted), "%s", ScenarioPointer<const char>(params->formatOffset));
+#else
     std::va_list nativeArguments;
 #if defined(_WIN32)
     nativeArguments = reinterpret_cast<char *>(rawParams) + offsetof(DebugStringParameters, arguments);
@@ -1996,9 +2003,9 @@ void Script_PrintDebugString(ScenarioContext *, void *rawParams) {
     nativeArguments[0].overflow_arg_area = reinterpret_cast<char *>(rawParams) + offsetof(DebugStringParameters, arguments);
     nativeArguments[0].reg_save_area = nullptr;
 #endif
-    char formatted[256];
     std::vsprintf(formatted, ScenarioPointer<const char>(params->formatOffset), nativeArguments);
     va_end(nativeArguments);
+#endif
     g_debugText = formatted;
     (void)QueueDebugText(g_debugTextPosition[0], g_debugTextPosition[1], g_debugText);
 }

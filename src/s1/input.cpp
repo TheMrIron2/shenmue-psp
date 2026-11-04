@@ -22,6 +22,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <xinput.h>
+#elif defined(SHENMUE_HOST_PSP)
+#include <pspctrl.h>
+#include "psp/boot_log.hpp"
 #endif
 
 namespace shenmue::s1 {
@@ -630,6 +633,39 @@ void UpdateControllerState(std::uint32_t userIndex) {
         controller.active = 0;
         g_controllerUserIndex = -1;
     }
+#elif defined(SHENMUE_HOST_PSP)
+    SceCtrlData state{};
+    sceCtrlPeekBufferPositive(&state, 1);
+
+    // Translate the PSP's controller layout into the XInput-style masks already
+    // consumed by the shared Shenmue input pipeline. Cross is confirm, Circle is
+    // cancel, and the D-pad is normalized to the engine's low-nibble layout.
+    controller.buttons =
+        // The shared legacy input translation swaps the two primary face-button
+        // bits for the active PSP input layout. Swap them here so Cross remains
+        // confirm (0x400) and Circle remains cancel (0x200) after that pass.
+        ((state.Buttons & PSP_CTRL_CROSS) ? 0x2000U : 0U) | ((state.Buttons & PSP_CTRL_CIRCLE) ? 0x1000U : 0U) |
+        ((state.Buttons & PSP_CTRL_SQUARE) ? 0x4000U : 0U) | ((state.Buttons & PSP_CTRL_TRIANGLE) ? 0x8000U : 0U) |
+        ((state.Buttons & PSP_CTRL_LTRIGGER) ? 0x0100U : 0U) | ((state.Buttons & PSP_CTRL_RTRIGGER) ? 0x0200U : 0U) |
+        ((state.Buttons & PSP_CTRL_START) ? 0x0010U : 0U) | ((state.Buttons & PSP_CTRL_SELECT) ? 0x0020U : 0U) |
+        ((state.Buttons & PSP_CTRL_UP) ? 0x0001U : 0U) | ((state.Buttons & PSP_CTRL_DOWN) ? 0x0002U : 0U) |
+        ((state.Buttons & PSP_CTRL_LEFT) ? 0x0004U : 0U) | ((state.Buttons & PSP_CTRL_RIGHT) ? 0x0008U : 0U);
+
+    const float horizontal = (static_cast<float>(state.Lx) - 128.0F) / 127.0F;
+    const float vertical = (128.0F - static_cast<float>(state.Ly)) / 128.0F;
+    controller.normalizedLX = std::fabs(horizontal) < 0.25F ? 0.0F : std::clamp(horizontal, -1.0F, 1.0F);
+    controller.normalizedLY = std::fabs(vertical) < 0.25F ? 0.0F : std::clamp(vertical, -1.0F, 1.0F);
+    controller.normalizedRX = 0.0F;
+    controller.normalizedRY = 0.0F;
+    controller.leftTrigger = 0;
+    controller.rightTrigger = 0;
+    controller.thumbLX = static_cast<std::int16_t>((static_cast<std::int32_t>(state.Lx) - 128) * 256);
+    controller.thumbLY = static_cast<std::int16_t>((128 - static_cast<std::int32_t>(state.Ly)) * 256);
+    controller.thumbRX = 0;
+    controller.thumbRY = 0;
+    controller.active = 1;
+    PostProcessControllerState(userIndex);
+    UpdateButtonAndTriggerStates(userIndex);
 #endif
 
     g_xInputReserved1 = 0;
@@ -709,6 +745,21 @@ void UpdateInputsFromInputDevices() {
     if (g_xInputReservedOverride != 0)
         g_xinputReserved = 0;
     input.xinputReserved = g_xinputReserved;
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t traceCount = 0;
+    static std::uint32_t activeTraceCount = 0;
+    bool shouldTrace = traceCount < 4;
+    if (traceCount < 4)
+        ++traceCount;
+    if (!shouldTrace && (g_controllers[userIndex].buttons != 0 || input.held != 0 || input.pressedPriority != 0) && activeTraceCount < 32) {
+        ++activeTraceCount;
+        shouldTrace = true;
+    }
+    if (shouldTrace)
+        psp::BootLog("PSP input: enabled=%d buttons=%04x held=%04x pressed=%04x", g_isInputEnabled,
+                     static_cast<unsigned>(g_controllers[userIndex].buttons), static_cast<unsigned>(input.held),
+                     static_cast<unsigned>(input.pressedPriority));
+#endif
 }
 
 namespace {
@@ -804,7 +855,12 @@ bool ResolveCurrentInputForGame(std::int32_t inputContext) {
 std::uint16_t ApplyCurrentInputForGameSwap(std::uint16_t value) {
     if (!ResolveCurrentInputForGame(-1))
         return value;
-    return static_cast<std::uint16_t>((value & 0xf9ffU) | (2U * (value & 0x0200U)) | ((value >> 1U) & 0x0200U));
+    // Keep the PSP trigger swap explicit so the compiler emits straightforward
+    // scalar operations instead of a bitfield insert.
+    const std::uint16_t swappedButtons = value & 0x0600U;
+    if (swappedButtons == 0x0200U || swappedButtons == 0x0400U)
+        value = static_cast<std::uint16_t>(value ^ 0x0600U);
+    return value;
 }
 
 std::uint16_t ReadInputSlotMode(std::uint32_t slot, std::uint32_t mode) {

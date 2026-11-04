@@ -3490,7 +3490,7 @@ void MovesScreen_DrawCell(
                 }
                 g_uiFontScale = g_uiViewSlots[slot].variables[static_cast<std::size_t>(label->scaleVar)].value.floatValue;
                 UI_SelectFont();
-                const std::int32_t length = static_cast<std::int32_t>(strnlen(label->text, 0x40));
+                const std::int32_t length = static_cast<std::int32_t>(shenmue::strnlen(label->text, 0x40));
                 const nk_user_font *const font = context.style.font;
                 const float width = font && font->width ? font->width(font->userdata, font->height, label->text, length) : 0.0f;
                 const float aspectWidth = static_cast<float>(UI_GetAspectWidth());

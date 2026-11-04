@@ -733,8 +733,8 @@ std::int32_t UIGrid_PlaceCellWidgets(UIGridTemplate &cellTemplate, std::int32_t 
     if (!cellTemplate.initialized) {
         for (std::uint32_t window = first; window < end; ++window) {
             if (d3t::UIWindow *const record = cellTemplate.windows[window]) {
-                cellTemplate.idTemplatePositions[window - first] = static_cast<std::int32_t>(strnlen(record->id.data(), 0x40)) - 1;
-                cellTemplate.parentTemplatePositions[window - first] = static_cast<std::int32_t>(strnlen(record->layout.parentId.data(), 0x40)) - 1;
+                cellTemplate.idTemplatePositions[window - first] = static_cast<std::int32_t>(shenmue::strnlen(record->id.data(), 0x40)) - 1;
+                cellTemplate.parentTemplatePositions[window - first] = static_cast<std::int32_t>(shenmue::strnlen(record->layout.parentId.data(), 0x40)) - 1;
             }
         }
         cellTemplate.initialized = 1;

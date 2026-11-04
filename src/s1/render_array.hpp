@@ -78,26 +78,40 @@ struct EffectProbeSlot {
 #pragma pack(pop)
 
 
+// HMDL model-instance capacity. Each RenderArrayEntry is ~34 KB (rigState), so
+// the PC's 1024 entries cost ~33.5 MB. The PSP keeps far fewer to fit its budget.
+#if defined(SHENMUE_HOST_PSP)
+inline constexpr std::size_t kHmdlEntryCapacity = 128;
+inline constexpr std::size_t kHmdlObjectCapacity = 128;
+inline constexpr std::size_t kHmdlLookupCapacity = 128;
+#else
+inline constexpr std::size_t kHmdlEntryCapacity = 1024;
+inline constexpr std::size_t kHmdlObjectCapacity = 1024;
+inline constexpr std::size_t kHmdlLookupCapacity = 1024;
+#endif
+inline constexpr std::uint32_t kHmdlTableCapacity = static_cast<std::uint32_t>(kHmdlObjectCapacity);
+inline constexpr std::uint32_t kHmdlTableMask = kHmdlTableCapacity - 1U;
+
 struct HmdlEntryStorage {
-    RenderArrayEntry entries[1024];
-    std::uint32_t generations[1024];
+    RenderArrayEntry entries[kHmdlEntryCapacity];
+    std::uint32_t generations[kHmdlEntryCapacity];
     std::uint32_t cursor;
     std::byte reserved_217f004[4];
 };
 
 
 struct HmdlEntryLookup {
-    std::uint32_t values[1024];
-    std::uint32_t hashes[1024];
-    std::uint16_t probes[1024];
+    std::uint32_t values[kHmdlLookupCapacity];
+    std::uint32_t hashes[kHmdlLookupCapacity];
+    std::uint16_t probes[kHmdlLookupCapacity];
     std::uint32_t count;
 };
 
 
 struct HmdlObjectStorage {
-    RenderArrayOwner objects[1024];
-    std::uint32_t hashes[1024];
-    std::uint16_t probes[1024];
+    RenderArrayOwner objects[kHmdlObjectCapacity];
+    std::uint32_t hashes[kHmdlObjectCapacity];
+    std::uint16_t probes[kHmdlObjectCapacity];
     std::uint32_t count;
     std::byte reserved_5b804[4];
 };

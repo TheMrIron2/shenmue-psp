@@ -1,5 +1,8 @@
-# Shenmue I & II 
+# Shenmue PSP
 
+An experimental port of Shenmue I to PSP. Shenmue II is not a target right now. The original README continues below.
+
+# Shenmue I & II 
 
 This repository contains a C++ reimplementation of Shenmue I & II for PC and Dreamcast, including the What's Shenmue promotional demo. 
 

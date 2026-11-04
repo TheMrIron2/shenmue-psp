@@ -1,5 +1,6 @@
 #pragma once
 #include "s1/file_loader.hpp"
+#include "s1/d3t/d3t_texture.hpp"
 #include "s1/texture_loader.hpp"
 #include "s1/texture_cache.hpp"
 #include "s1/hlib.hpp"
@@ -14,6 +15,7 @@ namespace shenmue::s1::ui_runtime_detail {
 
 struct OwnedSpriteAsset {
     std::int32_t surface{-1};
+    std::uint32_t textureHandle{};
     std::int32_t textureIdLow{};
     std::int32_t textureIdHigh{};
 };
@@ -35,7 +37,8 @@ template <std::size_t Capacity> void ReleaseSpriteSet(OwnedSpriteSet<Capacity> &
     set.loadAttempted = false;
 }
 
-template <std::size_t Capacity> void ParseSpriteSet(OwnedSpriteSet<Capacity> &set, std::byte *bytes, std::size_t size) {
+template <std::size_t Capacity>
+void ParseSpriteSet(OwnedSpriteSet<Capacity> &set, std::byte *bytes, std::size_t size, bool retainPspPixels = false, std::uint16_t maxPspDimension = 0) {
     std::size_t offset = 0;
     while (offset + 16 <= size && set.count < set.assets.size()) {
         std::uint32_t chunkTag = 0;
@@ -48,24 +51,32 @@ template <std::size_t Capacity> void ParseSpriteSet(OwnedSpriteSet<Capacity> &se
         OwnedSpriteAsset asset;
         std::memcpy(&asset.textureIdLow, bytes + offset + 8, sizeof(asset.textureIdLow));
         std::memcpy(&asset.textureIdHigh, bytes + offset + 12, sizeof(asset.textureIdHigh));
-        asset.surface = LoadTEXN(bytes + offset);
-        if (asset.surface >= 0)
+        asset.surface = LoadTEXN(bytes + offset, retainPspPixels, maxPspDimension);
+        if (asset.surface >= 0) {
+            asset.textureHandle = GetPVRSurfaceTextureHandle(asset.surface);
             set.assets[set.count++] = asset;
+        }
         offset += chunkSize;
     }
 }
 
-template <std::size_t Capacity> bool LoadSpriteSet(OwnedSpriteSet<Capacity> &set, const char *filename, std::int32_t token) {
+template <std::size_t Capacity>
+bool LoadSpriteSet(OwnedSpriteSet<Capacity> &set, const char *directory, const char *filename, std::int32_t token, bool retainPspPixels = false,
+    std::uint16_t maxPspDimension = 0) {
     if (set.loadAttempted)
         return set.count != 0;
     set.loadAttempted = true;
-    const std::size_t size = static_cast<std::size_t>(shenOpenFile("sprite", filename));
-    void *const file = size ? ReadFile("sprite", filename, token) : nullptr;
+    const std::size_t size = static_cast<std::size_t>(shenOpenFile(directory, filename));
+    void *const file = size ? ReadFile(directory, filename, token) : nullptr;
     if (!file)
         return false;
-    ParseSpriteSet(set, static_cast<std::byte *>(file), size);
+    ParseSpriteSet(set, static_cast<std::byte *>(file), size, retainPspPixels, maxPspDimension);
     HLib_FreeTaskData(static_cast<HLib::TaskData *>(file), 0);
     return set.count != 0;
+}
+
+template <std::size_t Capacity> bool LoadSpriteSet(OwnedSpriteSet<Capacity> &set, const char *filename, std::int32_t token) {
+    return LoadSpriteSet(set, "sprite", filename, token);
 }
 
 template <std::size_t Capacity> const OwnedSpriteAsset *FindSpriteAsset(const OwnedSpriteSet<Capacity> &set, std::int32_t assetId) {
@@ -83,6 +94,26 @@ template <std::size_t Capacity> const OwnedSpriteAsset *FindSpriteAsset(const Ow
         return asset;
     }
     return fallbackIndex < set.count ? &set.assets[fallbackIndex] : nullptr;
+}
+
+template <std::size_t Capacity> const OwnedSpriteAsset *FindSpriteAssetByName(const OwnedSpriteSet<Capacity> &set, const char *name) {
+    if (!name)
+        return nullptr;
+    std::uint32_t low = 0;
+    std::uint32_t high = 0;
+    for (std::size_t index = 0; index < 8 && name[index] != '\0'; ++index) {
+        const std::uint32_t byte = static_cast<std::uint8_t>(name[index]);
+        if (index < 4)
+            low |= byte << (index * 8U);
+        else
+            high |= byte << ((index - 4U) * 8U);
+    }
+    for (std::size_t index = 0; index < set.count; ++index) {
+        const OwnedSpriteAsset &asset = set.assets[index];
+        if (asset.textureIdLow == static_cast<std::int32_t>(low) && asset.textureIdHigh == static_cast<std::int32_t>(high))
+            return &asset;
+    }
+    return nullptr;
 }
 
 

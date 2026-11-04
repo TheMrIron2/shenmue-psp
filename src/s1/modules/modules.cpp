@@ -1,4 +1,7 @@
 #include "logging.hpp"
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
 #include "s1/boot.hpp"
 #include "s1/launch_options.hpp"
 #include "s1/save_format.hpp"
@@ -33,15 +36,27 @@ void HLib_InertTaskCallback(HLib::TaskData *) {
 }
 
 std::int64_t Shenmue_Init(HLib::TaskData *) {
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("module: Shenmue_Init begin");
+#endif
     InitMain();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("module: InitMain returned");
+#endif
     return HLib_UpdateTaskQueue(SystemModule::Audio);
 }
 
 std::int64_t SetToDisplayModule(HLib::TaskData *) {
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("module: SetToDisplay");
+#endif
     return HLib_UpdateTaskQueue(SystemModule::Display);
 }
 
 std::int64_t Audio_Module(HLib::TaskData *taskData) {
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("module: Audio begin");
+#endif
     PauseGameAudioSequence();
     VFMA_TaskPtr = nullptr;
     if (g_mapLaunchOptions.active) {
@@ -66,6 +81,9 @@ std::int64_t Audio_Module(HLib::TaskData *taskData) {
         return HLib_UpdateTaskQueue(SystemModule::Map);
     }
     const auto *const context = reinterpret_cast<const AudioModuleContext *>(taskData);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("module: Audio next=%s", context->mode == 1 ? "SetToDisplay" : "Display");
+#endif
     return HLib_UpdateTaskQueue(context->mode == 1 ? SystemModule::SetToDisplay : SystemModule::Display);
 }
 

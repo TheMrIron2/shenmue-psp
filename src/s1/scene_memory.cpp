@@ -4,12 +4,35 @@
 
 #include "s1/d3t/d3t_buffer.hpp"
 
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <new>
 
 namespace shenmue::s1 {
+
+namespace {
+
+void LogSceneTransientAllocationFailure(std::size_t size, const char *reason, std::int64_t capacity = -1) {
+#if defined(SHENMUE_HOST_PSP)
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        psp::BootLog("SceneTransient: allocation denied reason=%s size=%u data=%p offset=%lld capacity=%lld", reason,
+            static_cast<unsigned>(size), g_pSTCH, static_cast<long long>(g_TotalSceneFileReadBytes), static_cast<long long>(capacity));
+    }
+#else
+    static_cast<void>(size);
+    static_cast<void>(reason);
+    static_cast<void>(capacity);
+#endif
+}
+
+} // namespace
 
 std::uint32_t g_sceneDataMemoryFlags = 0;
 std::uint32_t g_originalStripShaderCapacity = 0;
@@ -24,15 +47,25 @@ std::int32_t g_originalStripPassCount = 0;
 std::uint32_t *g_originalStripBlendBlock = nullptr;
 
 void *AllocateSceneTransient(std::size_t size) {
-    if (!size || !g_pSTCH || g_TotalSceneFileReadBytes < 0)
+    if (!size) {
+        LogSceneTransientAllocationFailure(size, "zero-size");
         return nullptr;
+    }
+    if (!g_pSTCH || g_TotalSceneFileReadBytes < 0) {
+        LogSceneTransientAllocationFailure(size, !g_pSTCH ? "no-stch" : "negative-offset");
+        return nullptr;
+    }
     const auto *const owner = static_cast<const HLib::TaskData *>(g_pSTCH) - 1;
     const std::int64_t capacity = owner->content_size - static_cast<std::int64_t>(sizeof(HLib::TaskData));
-    if (capacity < 0 || size > static_cast<std::uint64_t>(capacity))
+    if (capacity < 0 || size > static_cast<std::uint64_t>(capacity)) {
+        LogSceneTransientAllocationFailure(size, "oversize", capacity);
         return nullptr;
+    }
     const std::size_t allocationSize = (size + 7U) & ~std::size_t{3};
-    if (static_cast<std::uint64_t>(g_TotalSceneFileReadBytes) + allocationSize > static_cast<std::uint64_t>(capacity))
+    if (static_cast<std::uint64_t>(g_TotalSceneFileReadBytes) + allocationSize > static_cast<std::uint64_t>(capacity)) {
+        LogSceneTransientAllocationFailure(size, "pool-exhausted", capacity);
         return nullptr;
+    }
     auto *const marker = static_cast<std::byte *>(g_pSTCH) + g_TotalSceneFileReadBytes;
     const std::uint32_t token = SHEN_NAME(USSH);
     std::memcpy(marker, &token, sizeof(token));

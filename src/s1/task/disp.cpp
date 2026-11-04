@@ -1,4 +1,9 @@
 #include "s1/task/disp.hpp"
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#include "psp/frontend_renderer.hpp"
+#include "s1/dreamcast_frontend.hpp"
+#endif
 #include "s1/d3t/settings.hpp"
 #include "s1/boot.hpp"
 #include "s1/input.hpp"
@@ -83,6 +88,9 @@ static_assert(offsetof(DisplayTaskData, colour) == 0x200);
 DisplayTaskData *g_displayTaskData = nullptr;
 std::int32_t g_displayFadeOverrideActive = 0;
 std::int32_t g_displayState = 1;
+#if defined(SHENMUE_HOST_PSP)
+dreamcast_frontend::TitleController g_usaTitleController{};
+#endif
 std::array<std::int32_t, 3> g_displayTextureResources{};
 float g_screenDisplayAlpha = 0.0f;
 std::int32_t g_bookkeepingRefreshLoaded = 0;
@@ -110,6 +118,9 @@ const S1SaveSummary *BookkeepingSummary(const std::byte *cache, std::int32_t slo
 }
 
 void SetIntroSceneInfoCallback(HLib::TaskData *) {
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("USA title: handoff OP02 scene=1 entry=1 module=7");
+#endif
     g_sceneId = 1;
     g_areaId = SHEN_NAME(OP02);
     g_entryPoint = 1;
@@ -144,8 +155,15 @@ void SetIntroSceneInfo(HLib::TaskData *) {
     } else if (g_currentSplashScreenIndex >= 6) {
         TryInvokeRegisteredCallback(0x3c);
     }
+#if defined(SHENMUE_HOST_PSP)
+    if (!g_displayFadeOverrideActive && g_usaTitleController.phase == 6)
+        g_bIsNewGame = 1;
+#endif
     if (g_bIsNewGame) {
         g_bIsNewGame = 0;
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("USA title: phase=6 scheduling OP02 scene=1 entry=1 delay=30");
+#endif
         if (CurrentTask) {
             CurrentTask->initCallbackFnPtr = SetIntroSceneInfoCallback;
             CurrentTask->mainTaskCallbackFnPtr = HLib_SetTaskCallbackToInitCallback;
@@ -218,6 +236,10 @@ void SetPausedAndInit() {
     g_displayFadeOverrideActive = 0;
     g_isOnMainMenu = 1;
     g_displayState = 2;
+#if defined(SHENMUE_HOST_PSP)
+    dreamcast_frontend::ResetTitleController(g_usaTitleController, 2);
+    psp::BootLog("USA title: menu cancel resumed phase=2 countdown=240");
+#endif
     g_displayTextureResources[0] = 0;
     g_displayTextureResources[1] = 0;
     g_displayTextureResources[2] = 0;
@@ -230,6 +252,13 @@ void SetPausedAndInit() {
 
 void DISP_Callback(HLib::TaskData *taskData) {
     auto *const display = reinterpret_cast<DisplayTaskData *>(taskData);
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t traceCount = 0;
+    if (traceCount++ < 8)
+        psp::BootLog("DISP_Callback: frame=%u task=%p display=%p state=%d splash=%d fade=%d", static_cast<unsigned>(traceCount),
+                     static_cast<void *>(taskData), static_cast<void *>(display), g_displayState, g_currentSplashScreenIndex,
+                     g_displayFadeOverrideActive);
+#endif
     if (!display || (!g_displayFadeOverrideActive && g_currentSplashScreenIndex < 6))
         return;
 
@@ -241,6 +270,23 @@ void DISP_Callback(HLib::TaskData *taskData) {
     display->scaleY = 1.0f;
     display->field_230 = 0;
 
+#if defined(SHENMUE_HOST_PSP)
+    if (!g_displayFadeOverrideActive) {
+        const std::int32_t previous = g_usaTitleController.phase;
+        dreamcast_frontend::AdvanceTitleController(g_usaTitleController);
+        g_displayState = g_usaTitleController.phase;
+        g_ClearColour = dreamcast_frontend::TitleClearColour(g_usaTitleController);
+        display->colour = g_displayState == 2 ? 0xffffffffU :
+            (static_cast<std::uint32_t>(g_usaTitleController.alpha) << 24U) | 0x00ffffffU;
+        if (previous != g_displayState) {
+            if (previous == 2)
+                shenExecuteAICACommand(0x0aa0, 2, 10);
+            psp::BootLog("USA title: phase=%d previous=%d countdown=%d alpha=%d", g_displayState, previous,
+                         g_usaTitleController.countdown, g_usaTitleController.alpha);
+        }
+        return;
+    }
+#endif
     float alpha = g_screenDisplayAlpha;
     if (g_displayFadeOverrideActive && g_displayState != 2) {
         alpha += g_bEnableFrameTimeSmoothing ? fFrameTimeMs * 120.0f : 4.0f;
@@ -473,6 +519,9 @@ void Script_CtrlTimeLimit(ScenarioContext *context, void *rawParams) {
 }
 
 void DISP_Module(HLib::TaskData *taskData) {
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("DISP_Module: begin");
+#endif
     g_actNumber = 1;
     g_isOnMainMenu = 1;
     for (std::int32_t &texture : g_displayTextureResources) {
@@ -505,6 +554,10 @@ void DISP_Module(HLib::TaskData *taskData) {
         displayTask->mainTaskCallbackFnPtr = std::bit_cast<HLib::TaskCallback>(&HLib_DestroyCurrentTask);
         displayTask->autoInitTaskCallbackFnPtr = nullptr;
     }
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("DISP_Module: display task=%p task_data=%p display_data=%p", static_cast<void *>(displayTask),
+                 displayTask ? static_cast<void *>(displayTask->task_data_ptr) : nullptr, static_cast<void *>(g_displayTaskData));
+#endif
 
     auto *const module = reinterpret_cast<ModuleTaskData *>(taskData);
     if (module && module->data) {
@@ -520,33 +573,81 @@ void DISP_Module(HLib::TaskData *taskData) {
 
     std::uint32_t titleSpriteSize = 0;
     void *const titleSprite = LoadGzippedSpriteIntoHeapMem("TITLE4_A.GZ", SHEN_NAME(TEMP), &titleSpriteSize);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("DISP_Module: title sprite ptr=%p size=%u", titleSprite, titleSpriteSize);
+#endif
     if (titleSprite && g_displayTaskData) {
         auto *const bytes = static_cast<std::byte *>(titleSprite);
         std::size_t offset = 0;
         std::size_t textureIndex = 0;
         auto *const textureHandles = reinterpret_cast<std::int32_t *>(g_displayTaskData);
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("DISP_Module: title texture parse begin sprite=%p display=%p", titleSprite, static_cast<void *>(g_displayTaskData));
+#endif
+#if defined(SHENMUE_HOST_PSP)
+        textureIndex = psp::frontend::LoadTextures(bytes, titleSpriteSize, textureHandles, 0x77) ? 33 : 0;
+#else
         while (offset + 8 <= titleSpriteSize && textureIndex < 0x77) {
             std::uint32_t tag = 0;
             std::uint32_t nextOffset = 0;
             std::memcpy(&tag, bytes + offset, sizeof(tag));
             std::memcpy(&nextOffset, bytes + offset + 4, sizeof(nextOffset));
+#if defined(SHENMUE_HOST_PSP)
+            if (textureIndex < 12) {
+                psp::BootLog("DISP_Module: title chunk index=%u offset=%u tag=%08x size=%u", static_cast<unsigned>(textureIndex),
+                             static_cast<unsigned>(offset), static_cast<unsigned>(tag), static_cast<unsigned>(nextOffset));
+            }
+#endif
             if (tag != SHEN_NAME(TEXN) || nextOffset < 8 || nextOffset > titleSpriteSize - offset) {
+#if defined(SHENMUE_HOST_PSP)
+                psp::BootLog("DISP_Module: title chunk stop index=%u offset=%u tag=%08x size=%u", static_cast<unsigned>(textureIndex),
+                             static_cast<unsigned>(offset), static_cast<unsigned>(tag), static_cast<unsigned>(nextOffset));
+#endif
                 break;
             }
             const std::int32_t texture = LoadTEXN(bytes + offset);
+#if defined(SHENMUE_HOST_PSP)
+            if (textureIndex < 12)
+                psp::BootLog("DISP_Module: title chunk loaded index=%u surface=%d", static_cast<unsigned>(textureIndex), texture);
+#endif
             textureHandles[textureIndex] = texture;
             ++textureIndex;
             offset += nextOffset;
         }
+#endif
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("DISP_Module: loaded title texture chunks=%u", static_cast<unsigned>(textureIndex));
+        psp::BootLog("DISP_Module: title sprite release begin ptr=%p", titleSprite);
+#endif
         HLib_FreeTaskData(reinterpret_cast<HLib::TaskData *>(titleSprite), 0);
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("DISP_Module: title sprite release complete");
+#endif
     } else if (titleSprite) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("DISP_Module: release unparsed title sprite ptr=%p", titleSprite);
+#endif
         HLib_FreeTaskData(reinterpret_cast<HLib::TaskData *>(titleSprite), 0);
     }
 
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("DISP_Module: hotplug start begin");
+#endif
     bupHotPlugTaskStart();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("DISP_Module: hotplug start returned");
+    psp::BootLog("DISP_Module: bookkeeping listener begin");
+#endif
     HPLG_RegisterBookkeepingListener(MainMenu_OnBookkeepingCacheRefreshed);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("DISP_Module: bookkeeping listener returned");
+#endif
 
     const SystemModule previous = module ? module->previousModule : SystemModule::Audio;
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("DISP_Module: previous module=%d entry=%d currentSplash=%d", static_cast<int>(previous), g_entryPoint,
+                 g_currentSplashScreenIndex);
+#endif
     if (previous == SystemModule::Audio) {
         g_displayState = 1;
     } else if (previous == SystemModule::SetToDisplay) {
@@ -564,16 +665,48 @@ void DISP_Module(HLib::TaskData *taskData) {
         d3t::ActivateElementByIdx(0x3c);
     }
 
+#if defined(SHENMUE_HOST_PSP)
+    dreamcast_frontend::ResetTitleController(g_usaTitleController, g_displayState == 7 ? 7 : 1);
+    psp::BootLog("DISP_Module: state selected state=%d USA phase=%d", g_displayState, g_usaTitleController.phase);
+#endif
     krepEnqueue(0);
     krepEnqueue(4);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("DISP_Module: KREP tasks enqueued");
+#endif
     if (CurrentTask) {
         CurrentTask->initCallbackFnPtr = nullptr;
         CurrentTask->mainTaskCallbackFnPtr = SetIntroSceneInfo;
         CurrentTask->autoInitTaskCallbackFnPtr = nullptr;
     }
     g_ClearColour = 0xff000000;
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("DISP_Module: SAVE_Init begin");
+#endif
     SAVE_Init(1);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("DISP_Module: SAVE_Init returned");
+    psp::BootLog("DISP_Module: frontend state=%d splash=%d uiState=%d splashVisible=%u pressStartVisible=%u bookkeeping=%d",
+                 g_displayState, g_currentSplashScreenIndex, g_currUIState, static_cast<unsigned>(g_uiElements[0x3b].isVisible),
+                 static_cast<unsigned>(g_uiElements[0x3c].isVisible), g_bookkeepingRefreshLoaded);
+    psp::BootLog("DISP_Module: complete");
+#endif
 }
+
+#if defined(SHENMUE_HOST_PSP)
+const dreamcast_frontend::TitleController &DISP_GetTitleController() noexcept {
+    return g_usaTitleController;
+}
+
+bool DISP_AcceptTitleStart(std::uint16_t pressed) noexcept {
+    if (!dreamcast_frontend::AcceptTitleStart(g_usaTitleController, pressed))
+        return false;
+    SetSettingFlags();
+    g_displayFadeOverrideActive = 1;
+    psp::BootLog("USA title: accepted Start phase=2 input=%04x", static_cast<unsigned>(pressed));
+    return true;
+}
+#endif
 
 std::int32_t DISP_GetTitleState() noexcept {
     return g_displayState;

@@ -1,4 +1,11 @@
 #include "s1/task/cycle_man_internal.hpp"
+#include "common/archive_data.hpp"
+
+#include <new>
+
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
 
 namespace shenmue::s1::CycleManager {
 
@@ -176,7 +183,6 @@ void LoadMNRBAndMCIR() {
         }
         cm.mnrbEntries.push_back(entry);
     }
-
 }
 
 
@@ -1165,21 +1171,85 @@ void ParseProgramForChara(uint32_t charaToken, uint32_t timetableIndex) {
 
 void MoveObj_FileLoad(const char *InFilename) {
     CycleManager::RuntimeState &cm = g_cycleManagerRuntime;
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t traceCount = 0;
+    const bool traceFile = traceCount++ < 16;
+#endif
     cm.loaded = false;
     cm.bytes.clear();
     cm.relinkedOffsetFields.clear();
     cm.sections.clear();
     cm.schedule.clear();
     const std::string rel = std::string("misc/") + InFilename;
+#if defined(SHENMUE_HOST_PSP)
+    bool fileRead = false;
+    if (traceFile)
+        psp::BootLog("Cycleman file: read begin path=%s", rel.c_str());
+    if (g_cycleManagerReadFile) {
+        if (traceFile)
+            psp::BootLog("Cycleman file: custom reader begin");
+        fileRead = g_cycleManagerReadFile(rel, cm.bytes);
+        if (traceFile)
+            psp::BootLog("Cycleman file: custom reader returned=%d bytes=%u", fileRead, static_cast<unsigned>(cm.bytes.size()));
+    }
+    if (!fileRead) {
+        if (traceFile)
+            psp::BootLog("Cycleman file: ArchiveData_GetFileSize begin");
+        const std::uint64_t fileSize = ArchiveData_GetFileSize(rel.c_str());
+        if (traceFile)
+            psp::BootLog("Cycleman file: ArchiveData_GetFileSize returned=%u", static_cast<unsigned>(fileSize));
+        if (fileSize && fileSize <= static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+#if defined(SHENMUE_HOST_PSP)
+            if (traceFile) {
+                psp::BootLogHeap("before cycleman vector resize");
+                psp::BootLog("Cycleman file: resize begin bytes=%u", static_cast<unsigned>(fileSize));
+            }
+            try {
+#endif
+            cm.bytes.resize(static_cast<std::size_t>(fileSize));
+#if defined(SHENMUE_HOST_PSP)
+            } catch (const std::bad_alloc &) {
+                if (traceFile) {
+                    psp::BootLogHeap("cycleman vector resize failed");
+                    psp::BootLog("Cycleman file: resize allocation failed bytes=%u", static_cast<unsigned>(fileSize));
+                }
+                return;
+            }
+#endif
+            if (traceFile)
+                psp::BootLog("Cycleman file: resize returned bytes=%u", static_cast<unsigned>(cm.bytes.size()));
+#if defined(SHENMUE_HOST_PSP)
+            if (traceFile)
+                psp::BootLogHeap("after cycleman vector resize");
+#endif
+            if (traceFile)
+                psp::BootLog("Cycleman file: ArchiveData_Read begin bytes=%u", static_cast<unsigned>(fileSize));
+            fileRead = ArchiveData_Read(rel.c_str(), 0, cm.bytes.data(), fileSize);
+            if (traceFile)
+                psp::BootLog("Cycleman file: ArchiveData_Read returned=%d", fileRead);
+        }
+    }
+    if (!fileRead) {
+        if (traceFile)
+            psp::BootLog("Cycleman file: read failed path=%s", rel.c_str());
+        return;
+    }
+#else
     if (!CycleManager::ReadCurrentFile(rel, cm.bytes)) {
         return;
     }
+#endif
 
     cm.sourcePath = rel;
     uint32_t signature = 0;
     uint32_t count = 0;
     ReadValue(cm.bytes, 0, signature);
     ReadValue(cm.bytes, 4, count);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceFile)
+        psp::BootLog("Cycleman file: header signature=%08x sections=%u bytes=%u", static_cast<unsigned>(signature), static_cast<unsigned>(count),
+                     static_cast<unsigned>(cm.bytes.size()));
+#endif
     if (signature != SHEN_NAME(MOBJ) || count > 256 || 8ull + static_cast<uint64_t>(count) * 8ull > cm.bytes.size()) {
         return;
     }
@@ -1191,6 +1261,10 @@ void MoveObj_FileLoad(const char *InFilename) {
         cm.schedule.push_back({static_cast<int32_t>(section.token), static_cast<int32_t>(section.offset)});
         cm.sections.push_back(section);
     }
+#if defined(SHENMUE_HOST_PSP)
+    if (traceFile)
+        psp::BootLog("Cycleman file: schedule table parsed sections=%u", static_cast<unsigned>(cm.sections.size()));
+#endif
 
     for (CycleManager::Section &section : cm.sections) {
         uint32_t nextOffset = static_cast<uint32_t>(cm.bytes.size());

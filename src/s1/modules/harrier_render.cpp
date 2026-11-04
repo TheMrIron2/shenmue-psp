@@ -38,13 +38,21 @@ std::uint32_t g_harrierDebugFontTexture = 0;
 
 namespace {
 
+#if defined(SHENMUE_HOST_PSP)
+constexpr std::size_t kHarrierGraphicsBytes = 0x40000; // reduced for PSP load budget
+#else
 constexpr std::size_t kHarrierGraphicsBytes = 0x240000;
+#endif
 constexpr std::size_t kHarrierBackgroundGraphicsBytes = 0x40000;
 constexpr std::size_t kHarrierObjectGraphicsBytes = 0x200000;
 constexpr std::size_t kHarrierGraphicTileCount = kHarrierBackgroundGraphicsBytes / 64;
 constexpr std::size_t kHarrierTilePaletteCount = 128;
 constexpr std::size_t kHarrierSpritePaletteCount = 64;
+#if defined(SHENMUE_HOST_PSP)
+constexpr std::size_t kHarrierSpriteScratchPixels = 0x4000; // reduced for PSP load budget
+#else
 constexpr std::size_t kHarrierSpriteScratchPixels = 0x10000;
+#endif
 constexpr std::size_t kHarrierTilePixels = 32 * 32;
 constexpr std::size_t kHarrierMapWords = 32 * 64;
 constexpr std::size_t kHarrierVisibleLines = 224;

@@ -127,6 +127,9 @@ std::int64_t AssignShaderCallback(std::uint32_t textureHandle, void (*callback)(
 bool GetTexture2DDimensions(std::uint32_t textureHandle, std::uint32_t *width, std::uint32_t *height);
 bool GetTexture2DDescription(std::uint32_t textureHandle, Texture2DDescription *description);
 bool ReplaceTexture2DResource(std::uint32_t textureHandle, const Texture2DDescription *description);
+inline constexpr std::uint32_t kPspTexture5551 = 0x10000U;
+inline constexpr std::uint32_t kPspTexture5650 = 0x10001U;
+inline constexpr std::uint32_t kPspTexture4444 = 0x10002U;
 struct D3TTextureBackendView {
     void *texture;
     void *shaderResourceView;
@@ -140,9 +143,12 @@ struct D3TTextureBackendView {
     std::uint32_t format;
     std::uint32_t bindFlags;
     std::uint32_t flags;
+    bool swizzled;
 };
 
 bool GetTexture2DBackendView(std::uint32_t textureHandle, D3TTextureBackendView *view);
+bool AttachTexture2DBackendStorage(std::uint32_t textureHandle, void *storage, std::uint32_t width, std::uint32_t height, std::uint32_t format,
+    void (*releaseCallback)(void *), void *releaseCallbackArgument, bool swizzled = false);
 std::uint32_t GetD3TNativeTextureFormat(std::uint32_t format);
 std::int64_t GetStride(std::int32_t width, std::int32_t height, std::uint32_t format);
 inline constexpr std::uint32_t kInvalidLegacyTextureFormat = UINT32_MAX;

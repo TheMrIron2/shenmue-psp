@@ -1,0 +1,70 @@
+# Shenmue I -> Sony PSP build (M1: null-renderer boot)
+#
+# Standalone GNU Make build using the pspdev toolchain (no CMake).
+#   make -f Makefile.psp            # build EBOOT.PBP
+#   make -f Makefile.psp clean
+#
+# The source list lives in src/psp/sources.txt (game + D3T + ShenmueDK core).
+
+.DEFAULT_GOAL := all
+
+# BUILD_PRX=1 -> EBOOT.PBP / PRX (real hardware, launched from the XMB).
+# BUILD_PRX=0 -> plain executable ELF (`shenmue1_psp_link.elf`) for PSPLink.
+BUILD_PRX ?= 1
+ifeq ($(BUILD_PRX),1)
+TARGET        = shenmue1_psp
+EXTRA_TARGETS = EBOOT.PBP
+else
+TARGET        = shenmue1_psp_link
+endif
+
+PSP_EBOOT_TITLE = Shenmue
+PSP_LARGE_MEMORY = 1
+
+PSPSDK := $(shell psp-config --pspsdk-path)
+PSPDEV := $(shell psp-config --pspdev-path)
+
+# match the x86 build's `int32_t == int`
+DEFINES := -DSHENMUE_TARGET_S1_PSP=1 -DSHENMUE_HOST_PSP=1 \
+           -DSHENMUE_PSP_SILENT_AUDIO=1 \
+           -U__INT32_TYPE__ -D__INT32_TYPE__=int \
+           -U__UINT32_TYPE__ -D__UINT32_TYPE__=unsigned
+
+# DC_ASSETS=1 serves the extracted Dreamcast disc tree through ArchiveData_*
+# instead of the PC .tac/.tad archives. Requires a clean rebuild when toggled
+# (separate object dir below).
+DC_ASSETS ?= 0
+PSP_TEST_AUTO_CONFIRM ?= 0
+ifeq ($(DC_ASSETS),1)
+DEFINES += -DSHENMUE_USE_DC_ASSETS=1
+endif
+ifeq ($(PSP_TEST_AUTO_CONFIRM),1)
+DEFINES += -DSHENMUE_PSP_TEST_AUTO_CONFIRM=1
+endif
+
+OBJDIR  := build/psp/obj$(if $(filter 1,$(DC_ASSETS)),-dc,)$(if $(filter 1,$(PSP_TEST_AUTO_CONFIRM)),-testconfirm,)
+GEN_SRC := $(shell cat src/psp/sources.txt)
+ifeq ($(DC_ASSETS),1)
+GEN_SRC := $(filter-out src/common/archive_data.cpp libs/ShenmueDK/src/shendk/files/container/tad_reader.cpp,$(GEN_SRC))
+GEN_SRC += src/common/archive_data_dc.cpp
+endif
+OBJS    := $(addprefix $(OBJDIR)/,$(GEN_SRC:.cpp=.o))
+
+INCDIR := src third_party/nuklear third_party/cjson libs/ShenmueDK/include
+
+CXXFLAGS := -std=c++20 -O2 -G0 -Wall -Wno-unused-variable -Wno-unused-function \
+            -fno-strict-aliasing -MMD -MP $(DEFINES) \
+            -include $(CURDIR)/src/psp/psp_abi_compat.hpp
+
+# NOTE: --gc-sections cannot be used: it discards .rodata.sceModuleInfo and
+# psp-fixup-imports then fails with "no sceModuleInfo section found".
+LIBS := -ljsoncpp -lz -lstdc++ -latomic -lm -lpspsdk -lpspgu -lpspgum -lpspctrl -lpspaudio -lpspvfpu
+
+# Compile rules (build.mak only provides link/EBOOT rules).
+$(OBJDIR)/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+-include $(OBJS:.o=.d)
+
+include $(PSPSDK)/lib/build.mak

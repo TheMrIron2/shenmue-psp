@@ -1,5 +1,9 @@
 #include "s1/task/cycle_man_internal.hpp"
 
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
+
 namespace shenmue::s1 {
 
 using namespace CycleManager;
@@ -2397,9 +2401,20 @@ void PreLoad_InitCycleman() {
     g_MOBJ_pData = nullptr;
     g_MOBJ_num_entries = 0;
     g_MOBJ_Cycles = nullptr;
-    if (static_cast<std::uint32_t>(g_actNumber - 1) > 3U)
+    if (static_cast<std::uint32_t>(g_actNumber - 1) > 3U) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("Cycleman preload: skip act=%d", g_actNumber);
+#endif
         return;
+    }
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("Cycleman preload: MoveObj_FileLoad begin file=cm_d000.bin");
+#endif
     CycleManager::MoveObj_FileLoad("cm_d000.bin");
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("Cycleman preload: file loaded=%d bytes=%u sections=%u", cm.loaded, static_cast<unsigned>(cm.bytes.size()),
+                 static_cast<unsigned>(cm.sections.size()));
+#endif
     std::snprintf(g_tmp_cm_path, sizeof(g_tmp_cm_path), "%s", "misc");
     struct_v16_2 MSCR{};
     if (cm.loaded && !cm.schedule.empty()) {
@@ -2408,6 +2423,9 @@ void PreLoad_InitCycleman() {
     }
     g_MOBJ_needs_new_update = 1;
     g_MOBJ_num_entries = static_cast<std::int32_t>(MSCR.charaCnt);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("Cycleman preload: MSCR chars=%d", g_MOBJ_num_entries);
+#endif
     g_MOBJ_pData = static_cast<CycleManager::MobjEntry *>(HLib_AllocHeapMemBlock(32LL * g_MOBJ_num_entries, static_cast<std::int32_t>(SHEN_NAME(MOBJ))));
     g_MOBJ_Cycles = static_cast<CycleManager::MobjCycle *>(HLib_AllocHeapMemBlock(600LL * g_MOBJ_num_entries, static_cast<std::int32_t>(SHEN_NAME(MOBJ))));
     if (g_MOBJ_pData)
@@ -2415,14 +2433,39 @@ void PreLoad_InitCycleman() {
     if (g_MOBJ_Cycles)
         (reinterpret_cast<HLib::TaskData *>(g_MOBJ_Cycles) - 1)->alignment |= 1;
     g_mobjCycleCapacity = g_MOBJ_pData && g_MOBJ_Cycles ? g_MOBJ_num_entries : 0;
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("Cycleman preload: memory entries=%d data=%p cycles=%p capacity=%d", g_MOBJ_num_entries,
+                 static_cast<void *>(g_MOBJ_pData), static_cast<void *>(g_MOBJ_Cycles), g_mobjCycleCapacity);
+    psp::BootLog("Cycleman preload: MOBJ_AllocateTaskMemory begin");
+#endif
     MOBJ_AllocateTaskMemory();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("Cycleman preload: MOBJ_AllocateTaskMemory returned");
+    psp::BootLog("Cycleman preload: MOBJ_SetupTaskPointer begin");
+#endif
     MOBJ_SetupTaskPointer();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("Cycleman preload: MOBJ_SetupTaskPointer returned");
+#endif
 #if SHENMUE_IS_PC
     CycleManager::InitMemory();
 #endif
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("Cycleman preload: LoadMNRBAndMCIR begin");
+#endif
     CycleManager::LoadMNRBAndMCIR();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("Cycleman preload: LoadMNRBAndMCIR returned");
+    psp::BootLog("Cycleman preload: LoadSHUT begin");
+#endif
     CycleManager::LoadSHUT();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("Cycleman preload: LoadSHUT returned");
+#endif
     SetMOBJTaskPtr();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("Cycleman preload: complete");
+#endif
 }
 
 

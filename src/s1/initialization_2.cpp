@@ -1,4 +1,7 @@
 #include "s1/boot.hpp"
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
 
 #include "s1/archive_data.hpp"
 #include "s1/audio_stream.hpp"
@@ -243,46 +246,22 @@ char *GetBuffer() {
 }
 
 void AllocMemory() {
-    g_renderObjectStorage = ::operator new(374792);
-    auto *const objects = static_cast<std::byte *>(g_renderObjectStorage);
-    for (std::size_t index = 0; index < 1024; ++index) {
-        std::memset(objects + index * 360, 0, 360);
-        std::memset(objects + 368640 + index * sizeof(std::uint32_t), 0, sizeof(std::uint32_t));
-        std::memset(objects + 372736 + index * sizeof(std::uint16_t), 0, sizeof(std::uint16_t));
-    }
-    std::memset(objects + 374784, 0, sizeof(std::uint32_t));
+    // Sizes derive from the capacities in render_array.hpp so the PSP build can
+    // use a much smaller HMDL pool (the PC 1024-entry pool is ~33.5 MB because
+    // each RenderArrayEntry carries a 34 KB rigState buffer).
+    g_renderObjectStorage = ::operator new(sizeof(HmdlObjectStorage));
+    std::memset(g_renderObjectStorage, 0, sizeof(HmdlObjectStorage));
 
-    g_renderLookupStorage = ::operator new(10244);
-    std::memset(g_renderLookupStorage, 0, 10244);
+    g_renderLookupStorage = ::operator new(sizeof(HmdlEntryLookup));
+    std::memset(g_renderLookupStorage, 0, sizeof(HmdlEntryLookup));
 
-    g_renderPacketStorage = ::operator new(35123208);
-    auto *const packets = static_cast<std::byte *>(g_renderPacketStorage);
-    for (std::size_t index = 0; index < 1024; ++index) {
-        std::byte *const record = packets + index * 34296;
-        std::memset(record + 0x18, 0, sizeof(std::uint32_t));
-        constexpr std::array<std::size_t, 10> fields{
-            0x78,
-            0x80,
-            0x88,
-            0xac,
-            0xb4,
-            0xbc,
-            0x85cc,
-            0x85d4,
-            0x85dc,
-            0x85e4,
-        };
-        for (const std::size_t offset : fields) {
-            std::memset(record + offset, 0, sizeof(std::uint64_t));
-        }
-    }
-    std::memset(packets + 35119104, 0, 4096);
-    std::memset(packets + 35123200, 0, sizeof(std::uint64_t));
+    g_renderPacketStorage = ::operator new(sizeof(HmdlEntryStorage));
+    std::memset(g_renderPacketStorage, 0, sizeof(HmdlEntryStorage));
 
-    g_renderIndexStorageA = ::operator new(229384);
-    std::memset(g_renderIndexStorageA, 0, 229384);
-    g_renderIndexStorageB = ::operator new(0x38008);
-    std::memset(g_renderIndexStorageB, 0, 0x38008);
+    g_renderIndexStorageA = ::operator new(sizeof(HmdlHandleRemap));
+    std::memset(g_renderIndexStorageA, 0, sizeof(HmdlHandleRemap));
+    g_renderIndexStorageB = ::operator new(sizeof(HmdlHandleRemap));
+    std::memset(g_renderIndexStorageB, 0, sizeof(HmdlHandleRemap));
 }
 
 void Shenmue_Free() {
@@ -436,21 +415,45 @@ void Audio_n_Init() {
 
 
 void PauseGameAudioSequence() {
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("PauseGameAudioSequence: begin");
+#endif
     g_bPauseGameTasks = 1;
     g_isOnMainMenu = 1;
     HLTaskFunc_InternalInit();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("PauseGameAudioSequence: HLib reset complete");
+#endif
     ReleaseEncodedAudioBuffers();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("PauseGameAudioSequence: audio buffers released");
+#endif
     for (FileState &file : g_files) {
         ReadFile_0(0, &file.handle);
     }
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("PauseGameAudioSequence: file states reset");
+#endif
     g_shouldUseTemporaryClearColour = false;
     g_temporaryClearColour = {.red = 0xff, .green = 0, .blue = 0, .alpha = 0};
     shenInitDefaultStats();
     SCRL_SetLuminanceEnabled(false);
     SCRL_SetLuminanceChannels(0, 0, 0);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("PauseGameAudioSequence: initialize AICA begin");
+#endif
     InitializeAicaForNotebook();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("PauseGameAudioSequence: initialize AICA returned");
+#endif
     InitializeEncodedAudioBuffers();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("PauseGameAudioSequence: audio buffers allocated");
+#endif
     CreateNotebookTexture2DForPages();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("PauseGameAudioSequence: complete");
+#endif
 }
 
 
@@ -508,6 +511,9 @@ void InitSpriteBank(std::int32_t initSpriteTextures) {
 extern std::uint32_t g_ClearColour;
 
 void Initialization_2() {
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("Initialization_2: begin");
+#endif
     const float firstTime = QueryFrameTime();
     frameTime = firstTime;
     g_LastFrameTime = QueryFrameTime();
@@ -544,7 +550,15 @@ void Initialization_2() {
     config.matrices = g_defaultMatrices.data();
     config.matrixCount = 64;
     config.memoryLimit = 100000;
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("Initialization_2: ShenmueInit begin");
+    psp::BootLogHeap("before ShenmueInit");
+#endif
     ShenmueInit(&config);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("Initialization_2: ShenmueInit returned");
+    psp::BootLogHeap("after ShenmueInit");
+#endif
 
 #if !defined(SHENMUE_STEAM)
     std::uint64_t steamId = 1024;
@@ -559,7 +573,13 @@ void Initialization_2() {
     g_isValidCEWP = isValidCEWP;
     shenSetupDefaultAndDebugStates();
     AllocMemory();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLogHeap("after AllocMemory");
+#endif
     LoadShaders();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLogHeap("after LoadShaders");
+#endif
 
     if (!g_bSpriteBankInit) {
         g_bSpriteBankInit = 1;
@@ -571,6 +591,9 @@ void Initialization_2() {
     std::memset(g_previousInputData.data(), 0, g_previousInputData.size());
     ExecuteWeatherTaskQueue = ExecuteWeatherTaskQueue_Internal;
     InitEffectBuffers();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLogHeap("after InitEffectBuffers");
+#endif
 
     auto storeEffect32 = [](std::size_t offset, std::uint32_t value) { std::memcpy(g_effectInitializationState.data() + offset, &value, sizeof(value)); };
     auto storeEffect64 = [](std::size_t offset, std::uint64_t value) { std::memcpy(g_effectInitializationState.data() + offset, &value, sizeof(value)); };
@@ -644,6 +667,9 @@ void Initialization_2() {
         g_pendingThreadLockValid = 0;
     }
     FontLoader();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("Initialization_2: complete");
+#endif
 }
 
 } // namespace shenmue::s1

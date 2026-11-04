@@ -1,5 +1,15 @@
 /build*/
 /out/
+# User-provided Dreamcast disc images / extracted assets (never redistributed)
+*.bin
+*.cue
+*.gdi
+
+*.PBP
+/PARAM.SFO
+*.elf
+*.prx
+/BOOT.LOG
 /.cache/
 /.vs/
 **/.vs/
@@ -10,7 +20,7 @@
 *.ipch
 *.VC.db
 compile_commands.json
-/*.zip
+*.zip
 /nul
 /decomp/*.i64
 /src/s1/temp/
@@ -24,3 +34,7 @@ compile_commands.json
 /src/s1/motion/motion.h
 /src/s1/misc/m_mobj.*
 /src/s1/misc/m_mdor.*
+*.ps1
+*.LOG
+/PAL
+/docs/psp-bringup

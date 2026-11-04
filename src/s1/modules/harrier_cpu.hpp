@@ -8,7 +8,11 @@
 
 namespace shenmue::s1 {
 
+#if defined(SHENMUE_HOST_PSP)
+inline constexpr std::size_t kHarrierMemorySize = 0x40000; // reduced for PSP load budget
+#else
 inline constexpr std::size_t kHarrierMemorySize = 0x100000;
+#endif
 inline constexpr std::uint32_t kHarrierRomSize = 0x50000;
 inline constexpr std::uint32_t kEmu68FrameBoundaries[6] = {10000, 20000, 30000, 40000, 43750, 50000};
 inline constexpr std::uint8_t kEmu68_QuickCount[8] = {8, 1, 2, 3, 4, 5, 6, 7};

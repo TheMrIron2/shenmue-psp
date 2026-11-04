@@ -7,6 +7,9 @@
 #include "s1/task/scen.hpp"
 #include "s1/task/effe.hpp"
 #include "s1/timing.hpp"
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -131,12 +134,32 @@ void WIND_UpdateEntry(void *entryPointer) {
 }
 
 void WIND_Callback_0(HLib::TaskData *taskData) {
-    auto *entry = reinterpret_cast<std::byte *>(taskData) + 8;
-    for (std::int32_t index = 0; index < 5; ++index, entry += 0x88) {
-        if ((*reinterpret_cast<std::uint32_t *>(entry) & 1) != 0) {
-            WIND_UpdateEntry(entry);
+#if defined(SHENMUE_HOST_PSP)
+    static std::uint32_t traceCount = 0;
+    const bool trace = traceCount++ < 4;
+    if (trace)
+        psp::BootLog("WIND_Callback_0: begin taskData=%p windTask=%p", static_cast<void *>(taskData), static_cast<void *>(g_windTask));
+#endif
+    if (!taskData)
+        return;
+    auto *const data = reinterpret_cast<WindTaskData *>(taskData);
+    for (std::size_t index = 0; index < std::size(data->entries); ++index) {
+        WindEntry &entry = data->entries[index];
+#if defined(SHENMUE_HOST_PSP)
+        if (trace)
+            psp::BootLog("WIND_Callback_0: entry=%u ptr=%p flags=%08x", static_cast<unsigned>(index), static_cast<void *>(&entry),
+                         static_cast<unsigned>(entry.flags));
+        if ((entry.flags & 1U) != 0) {
+#else
+        if ((entry.flags & 1U) != 0) {
+#endif
+            WIND_UpdateEntry(&entry);
         }
     }
+#if defined(SHENMUE_HOST_PSP)
+    if (trace)
+        psp::BootLog("WIND_Callback_0: complete");
+#endif
 }
 
 HLib::Task *WIND_Init() {
@@ -168,6 +191,10 @@ HLib::Task *WIND_Init() {
 
     g_windTask = task;
     auto *const data = task ? reinterpret_cast<WindTaskData *>(task->task_data_ptr) : nullptr;
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("WIND_Init: task=%p taskData=%p size=%u", static_cast<void *>(task),
+                 data ? static_cast<void *>(data) : nullptr, static_cast<unsigned>(sizeof(WindTaskData)));
+#endif
     if (data) {
         data->identifier = SHEN_NAME(WNDT);
         for (WindEntry &entry : data->entries)
