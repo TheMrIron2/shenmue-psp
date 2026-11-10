@@ -1,3 +1,6 @@
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
 #include "s1/task/scen_state.hpp"
 
 namespace shenmue::s1 {
@@ -946,11 +949,27 @@ void SCEN_Callback(HLib::TaskData *taskData) {
     if (g_bDebugSkipCyclesForCharacters || static_cast<std::uint32_t>(g_NumFramesProcessed - 2) <= 1U)
         return;
 
+#if defined(SHENMUE_HOST_PSP)
+    static std::int32_t scenFrames = 0;
+    const bool traceScen = scenFrames < 4 || (scenFrames % 60) == 0;
+    if (traceScen)
+        psp::BootLog("SCEN_Callback: frame=%d window=%p functions=%p", static_cast<int>(scenFrames), static_cast<void *>(scenario->scenarioWindow),
+                     static_cast<void *>(scenario->scenarioFunctions));
+    ++scenFrames;
+#endif
     scenParseStackRecursively(scenario->scenarioWindow);
     if (scenario->scenarioFunctions) {
         g_scenarioFunctionWork = scenario->scenarioFunctions;
+#if defined(SHENMUE_HOST_PSP)
+        if (traceScen)
+            psp::BootLog("SCEN_Callback: parse begin active=%d", g_scenarioFunctionWork->active ? 1 : 0);
+#endif
         if (g_scenarioFunctionWork->active)
             SCEN_ParseRecursive();
+#if defined(SHENMUE_HOST_PSP)
+        if (traceScen)
+            psp::BootLog("SCEN_Callback: parse returned");
+#endif
 
         if (g_debug_talk_status >= 0) {
             std::array<char, 32> message{};
@@ -961,9 +980,25 @@ void SCEN_Callback(HLib::TaskData *taskData) {
         }
     }
 
+#if defined(SHENMUE_HOST_PSP)
+    if (traceScen)
+        psp::BootLog("SCEN_Callback: seq parse begin sequence=%p", static_cast<void *>(scenario->scenarioConstants));
+#endif
     SEQ_ParseFrame(scenario->scenarioConstants);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceScen)
+        psp::BootLog("SCEN_Callback: seq parse done");
+#endif
     SEQ_Cleanup();
+#if defined(SHENMUE_HOST_PSP)
+    if (traceScen)
+        psp::BootLog("SCEN_Callback: seq cleanup done");
+#endif
     g_uiElements[0x3a].isActive = 1;
+#if defined(SHENMUE_HOST_PSP)
+    if (traceScen)
+        psp::BootLog("SCEN_Callback: done");
+#endif
 }
 
 ScenarioFunctionWork *ASEQ_SCNF_Init(HLib::Task *scenarioTask) {

@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -84,6 +85,12 @@ SceUID g_pvrDecodeSemaphore = -1;
 void ReleaseRetainedPspTexturePixels(void *pixels) {
     if (pixels)
         HLib_FreeTaskData(static_cast<HLib::TaskData *>(pixels), 0);
+}
+
+// Matching release for pixels that came from the newlib heap fallback below.
+void ReleaseRetainedPspHeapPixels(void *pixels) {
+    if (pixels)
+        ::operator delete(pixels, std::align_val_t{32});
 }
 #endif
 
@@ -273,7 +280,27 @@ std::int32_t LoadTEXN(void *texnData, bool retainPspPixels, std::uint16_t maxPsp
 #else
     const std::size_t allocationBytes = 2ULL * outputBytes;
 #endif
-    void *const pixels = HLib_AllocHeapMemBlock(static_cast<std::int64_t>(allocationBytes), token);
+    bool pixelsFromPspHeap = false;
+    void *pixels = HLib_AllocHeapMemBlock(static_cast<std::int64_t>(allocationBytes), token);
+#if defined(SHENMUE_HOST_PSP)
+    if (!pixels) {
+        // The HLib arena can be full while the newlib heap still has sbrk room.
+        // The frontend's 33 retained title textures exhaust the arena at texture
+        // index 27, and losing one texture discards the whole set.
+        pixels = ::operator new(allocationBytes, std::align_val_t{32}, std::nothrow);
+        pixelsFromPspHeap = pixels != nullptr;
+        if (pixelsFromPspHeap)
+            psp::BootLog("LoadTEXN: arena full, pixels from heap bytes=%u", static_cast<unsigned>(allocationBytes));
+    }
+#endif
+    const auto releasePixels = [pixelsFromPspHeap](void *block) {
+        if (!block)
+            return;
+        if (pixelsFromPspHeap)
+            ::operator delete(block, std::align_val_t{32});
+        else
+            HLib_FreeTaskData(static_cast<HLib::TaskData *>(block), 0);
+    };
     if (!pixels) {
 #if defined(SHENMUE_HOST_PSP)
         sceKernelSignalSema(g_pvrDecodeSemaphore, 1);
@@ -281,8 +308,12 @@ std::int32_t LoadTEXN(void *texnData, bool retainPspPixels, std::uint16_t maxPsp
         std::free(decoded);
 #endif
 #if defined(SHENMUE_HOST_PSP)
-        if (traceTexture)
-            psp::BootLog("LoadTEXN: pixel allocation failed bytes=%u", static_cast<unsigned>(allocationBytes));
+        if (traceTexture) {
+            std::uint64_t largestArenaBlock = 0;
+            const std::uint64_t arenaFree = HLib_GetArenaFreeBytes(&largestArenaBlock);
+            psp::BootLog("LoadTEXN: pixel allocation failed bytes=%u arenaFree=%uKB arenaMax=%uKB", static_cast<unsigned>(allocationBytes),
+                         static_cast<unsigned>(arenaFree / 1024), static_cast<unsigned>(largestArenaBlock / 1024));
+        }
 #endif
         return -1;
     }
@@ -326,7 +357,11 @@ std::int32_t LoadTEXN(void *texnData, bool retainPspPixels, std::uint16_t maxPsp
     if (bitsPerElement == 24) {
         upload.format = 33160;
     }
-    upload.arenaOffset = static_cast<std::int32_t>(reinterpret_cast<std::uintptr_t>(pixels) - reinterpret_cast<std::uintptr_t>(g_pFirstTaskData) - 0x40);
+    // Only used as a truthiness check by d3t_UploadTexture2DToGPU; a heap-backed
+    // buffer has no arena offset, so report a non-zero placeholder.
+    upload.arenaOffset = pixelsFromPspHeap
+        ? -1
+        : static_cast<std::int32_t>(reinterpret_cast<std::uintptr_t>(pixels) - reinterpret_cast<std::uintptr_t>(g_pFirstTaskData) - 0x40);
 
     std::int32_t surface = PVR_FindOrAllocateSurface(texn->textureIdLow, texn->textureIdHigh);
 #if defined(SHENMUE_HOST_PSP)
@@ -338,7 +373,7 @@ std::int32_t LoadTEXN(void *texnData, bool retainPspPixels, std::uint16_t maxPsp
         if (traceTexture)
             psp::BootLog("LoadTEXN: no PVR surface available");
 #endif
-        HLib_FreeTaskData(static_cast<HLib::TaskData *>(pixels), 0);
+        releasePixels(pixels);
         return -1;
     }
     const std::int32_t uploadResult = d3t_UploadTexture2DToGPU(surface, &upload, pixels);
@@ -367,13 +402,13 @@ std::int32_t LoadTEXN(void *texnData, bool retainPspPixels, std::uint16_t maxPsp
             D3TTextureBackendView existing{};
             if (GetTexture2DBackendView(textureHandle, &existing) && existing.texture) {
                 retained = true;
-                HLib_FreeTaskData(static_cast<HLib::TaskData *>(pixels), 0);
+                releasePixels(pixels);
                 pixelsFreed = true;
             } else {
                 sceKernelDcacheWritebackRange(pixels, static_cast<unsigned>(outputBytes));
                 retained = ::shenmue::d3t::AttachTexture2DBackendStorage(
                     textureHandle, pixels, static_cast<std::uint32_t>(outputWidth), static_cast<std::uint32_t>(outputHeight), backendFormat,
-                    ReleaseRetainedPspTexturePixels, pixels, swizzled);
+                    pixelsFromPspHeap ? ReleaseRetainedPspHeapPixels : ReleaseRetainedPspTexturePixels, pixels, swizzled);
                 if (!retained) {
                     psp::BootLog("LoadTEXN: failed to retain PSP texture pixels handle=%08x size=%u", static_cast<unsigned>(textureHandle),
                                  static_cast<unsigned>(outputBytes));
@@ -389,7 +424,7 @@ std::int32_t LoadTEXN(void *texnData, bool retainPspPixels, std::uint16_t maxPsp
         surface = -1;
     }
     if (!retained && !pixelsFreed)
-        HLib_FreeTaskData(static_cast<HLib::TaskData *>(pixels), 0);
+        releasePixels(pixels);
 #else
     HLib_FreeTaskData(static_cast<HLib::TaskData *>(pixels), 0);
 #endif

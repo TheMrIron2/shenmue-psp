@@ -1,3 +1,6 @@
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
 #include "common/matrix_stack.hpp"
 
 #include "common/math.hpp"
@@ -7,6 +10,21 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+
+// The transform stack is only bounds-safe by convention: Push stores before it
+// checks capacity, most call sites ignore its result, and Pop can walk the stack
+// pointer backwards past the array once the index has drifted above capacity.
+// Every access is clamped to [base, base + capacity) so a desync corrupts at
+// most the transform, never neighbouring memory.
+namespace {
+bool matrixStackSlotValid(const shenmue::matrix_stack::MatrixStackEntry &entry) {
+    if (!entry.base || !entry.stack)
+        return false;
+    if (entry.info.capacity <= 0)
+        return false;
+    return entry.stack >= entry.base && entry.stack < entry.base + entry.info.capacity;
+}
+} // namespace
 
 namespace shenmue::matrix_stack {
 
@@ -146,6 +164,20 @@ void CalcCameraTransform(const Vector4 &eye, const Vector4 &target, std::int16_t
 }
 
 bool Matrix4x4_Push(const Matrix4x4 *transform) {
+    if (!matrixStackSlotValid(g_matrixStack.top)) {
+#if defined(SHENMUE_HOST_PSP)
+        static std::int32_t reported = 0;
+        if (reported < 4) {
+            ++reported;
+            psp::BootLog("Matrix4x4_Push: out-of-range stack base=%p stack=%p index=%d capacity=%d",
+                         static_cast<void *>(g_matrixStack.top.base), static_cast<void *>(g_matrixStack.top.stack),
+                         static_cast<int>(g_matrixStack.top.info.index), static_cast<int>(g_matrixStack.top.info.capacity));
+        }
+#endif
+        g_matrixStack.top.stack = g_matrixStack.top.base;
+        g_matrixStack.top.info.index = 0;
+        return false;
+    }
     *g_matrixStack.top.stack = workTransformMatrix;
     if (transform)
         workTransformMatrix = *transform;
@@ -495,6 +527,19 @@ void Matrix4x4::Pop(std::int32_t count) {
     }
     g_matrixStack.top.info.index = static_cast<std::int16_t>(g_matrixStack.top.info.index - count);
     g_matrixStack.top.stack -= stackCount;
+    if (!matrixStackSlotValid(g_matrixStack.top)) {
+#if defined(SHENMUE_HOST_PSP)
+        static std::int32_t reported = 0;
+        if (reported < 4) {
+            ++reported;
+            psp::BootLog("Matrix4x4::Pop: out-of-range stack base=%p stack=%p index=%d capacity=%d count=%d",
+                         static_cast<void *>(g_matrixStack.top.base), static_cast<void *>(g_matrixStack.top.stack),
+                         static_cast<int>(g_matrixStack.top.info.index), static_cast<int>(g_matrixStack.top.info.capacity), static_cast<int>(count));
+        }
+#endif
+        g_matrixStack.top.stack = g_matrixStack.top.base;
+        g_matrixStack.top.info.index = 0;
+    }
     workTransformMatrix = *g_matrixStack.top.stack;
 }
 

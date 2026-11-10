@@ -1,3 +1,6 @@
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
 #include "s1/face.hpp"
 
 #include "s1/task/char.hpp"
@@ -1596,6 +1599,14 @@ void FACE_Init() {
     g_faceTables = {};
     g_faceBlendStates = {};
     std::byte *program = static_cast<std::byte *>(g_FMOT);
+    if (!program) {
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("FACE_Init: FMOT table unavailable; skipping face motion programs");
+#endif
+        g_faceMotionProgramCount = 0;
+        EnsureFaceTalkBank();
+        return;
+    }
     g_faceMotionProgramCount = 4;
     for (std::size_t index = 0; index < 4; ++index) {
         const FmotProgramHeader *const header = reinterpret_cast<const FmotProgramHeader *>(program);

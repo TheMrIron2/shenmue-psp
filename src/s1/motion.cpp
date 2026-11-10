@@ -1,3 +1,6 @@
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
 #include "s1/motion.hpp"
 
 #include "s1/motion_registry.hpp"
@@ -746,6 +749,18 @@ void MOTN_FootPlantingCallback(MotionInformationWork *motion, void *) {
 // mainMotionUpdate: one MOTI evaluation per MOTM tick.
 // Returns the pose-evaluated byte (MOTI+0xAD) that MOTM_Callback hands to NPCLogger slot 5, or 0 on the early and culled exits.
 std::int32_t mainMotionUpdate(MotionInformationWork &motion) {
+#if defined(SHENMUE_HOST_PSP)
+    static std::int32_t tracedMotionUpdates = 0;
+    const bool traceMotion = tracedMotionUpdates < 2;
+    if (traceMotion) {
+        ++tracedMotionUpdates;
+        psp::BootLog("MOTION: enter active=%p secondary=%p transition=%p blendTarget=%p basePose=%d anim=%04x pending=%04x flags=%08x",
+                     static_cast<void *>(motion.activeNodes), static_cast<void *>(motion.secondaryNodes),
+                     static_cast<void *>(motion.transitionNodes), static_cast<void *>(motion.blendTargetNodes),
+                     static_cast<int>(motion.basePoseTemplateIndex), static_cast<unsigned>(motion.currentAnimId),
+                     static_cast<unsigned>(motion.pendingAnimId), static_cast<unsigned>(motion.motionFlags));
+    }
+#endif
     g_pMotion = &motion;
     std::uint8_t savedStage = 0;
     if (motion.externalTransform) {
@@ -759,6 +774,10 @@ std::int32_t mainMotionUpdate(MotionInformationWork &motion) {
     g_motnIgnoreArmIK = 0;
     if (!motion.activeNodes)
         return 0;
+#if defined(SHENMUE_HOST_PSP)
+    if (traceMotion)
+        psp::BootLog("MOTION: active nodes present");
+#endif
     const std::uint16_t pending = motion.pendingAnimId;
     if (pending == 0xffffU) {
         motion.motionFlags = flags | 0x10000000U;
@@ -769,6 +788,10 @@ std::int32_t mainMotionUpdate(MotionInformationWork &motion) {
             return 0;
     }
     MOTN_CaptureTrackedNodePosition(motion);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceMotion)
+        psp::BootLog("MOTION: after tracked node capture");
+#endif
     if (static_cast<std::uint32_t>(motion.basePoseTemplateIndex) > 20U)
         motion.basePoseTemplateIndex = 0;
     motion.rootAngleFlags &= ~0x20U;
@@ -787,6 +810,10 @@ std::int32_t mainMotionUpdate(MotionInformationWork &motion) {
             motion.rootAngleFlags &= ~0x80U;
     }
     motion.motionFlags &= ~0x202U;
+#if defined(SHENMUE_HOST_PSP)
+    if (traceMotion)
+        psp::BootLog("MOTION: after base pose block");
+#endif
     motion.blendScratch[3] =
         (motion.rootAngleFlags & 0x200000U) != 0 ? std::min(1.0f, motion.blendScratch[3] + 0.0625f) : std::max(0.0f, motion.blendScratch[3] - 0.0625f);
     motion.rootMotionDelta = {};
@@ -798,6 +825,10 @@ std::int32_t mainMotionUpdate(MotionInformationWork &motion) {
         }
     }
     motion.rootTransformCache = workTransformMatrix;
+#if defined(SHENMUE_HOST_PSP)
+    if (traceMotion)
+        psp::BootLog("MOTION: after stage block");
+#endif
     if (MOTF_IsAnimationInvalidated(motion.currentAnimId)) {
         if (!motion.pendingAnimId)
             motion.pendingAnimId = kBasePoseAnimationIds[motion.basePoseTemplateIndex];
@@ -816,6 +847,10 @@ std::int32_t mainMotionUpdate(MotionInformationWork &motion) {
             CaptureAnkleScratch(knee, 11, g_motnLeftAnkleValid, g_motnLeftAnkle);
     }
     const std::int32_t playResult = PlayMotionForRyo(motion, motion.pendingAnimId);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceMotion)
+        psp::BootLog("MOTION: after PlayMotionForRyo");
+#endif
     ClearEvaluatedFlags(static_cast<MotionNodeRuntime *>(motion.secondaryNodes));
     ClearEvaluatedFlags(static_cast<MotionNodeRuntime *>(motion.transitionNodes));
     ClearEvaluatedFlags(static_cast<MotionNodeRuntime *>(motion.blendTargetNodes));
@@ -829,6 +864,10 @@ std::int32_t mainMotionUpdate(MotionInformationWork &motion) {
     g_currentMotionUpdateMode = motion.updateMode;
     motion.updateMode = 0;
     MOTN_UpdateFrameTimer(motion);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceMotion)
+        psp::BootLog("MOTION: after frame timer");
+#endif
     const Vector3i savedEntityEuler = motion.entityEuler;
     if (motion.activeTurnEulerDelta.y)
         CalculateDifferenceResult(motion.activeTurnEulerDelta, motion.entityEuler, motion.frameStart, motion.frameTimer, motion.frameEnd);
@@ -859,6 +898,10 @@ std::int32_t mainMotionUpdate(MotionInformationWork &motion) {
         else
             MOTN_ClearSecondaryMotion(motion);
     }
+#if defined(SHENMUE_HOST_PSP)
+    if (traceMotion)
+        psp::BootLog("MOTION: after secondary motion");
+#endif
     if ((motion.motionFlags & 0x10000U) == 0)
         motion.motionFlags &= ~0x40000000U;
     if (playResult) {
@@ -894,6 +937,11 @@ std::int32_t mainMotionUpdate(MotionInformationWork &motion) {
                     motion.interpolationMode = requested;
             }
         }
+#if defined(SHENMUE_HOST_PSP)
+        if (traceMotion)
+            psp::BootLog("MOTION: interpolation=%d playResult=%d blendTarget=%p", static_cast<int>(motion.interpolationMode),
+                         static_cast<int>(playResult), static_cast<void *>(motion.blendTargetNodes));
+#endif
         Matrix4x4_Push();
         workTransformMatrix = transformMatrix_prePass;
         bool evaluated = false;
@@ -935,6 +983,10 @@ std::int32_t mainMotionUpdate(MotionInformationWork &motion) {
         if (!evaluated)
             return 0;
     }
+#if defined(SHENMUE_HOST_PSP)
+    if (traceMotion)
+        psp::BootLog("MOTION: after evaluate switch");
+#endif
     const bool slowRamp = (motion.rootAngleFlags & 0x1000000U) != 0;
     if (motion.worldTargets[3])
         motion.leftAnkleTargetBlendFrames = slowRamp ? std::min(motion.leftAnkleTargetBlendFrames + 1, 8) : 8;
@@ -961,6 +1013,10 @@ std::int32_t mainMotionUpdate(MotionInformationWork &motion) {
     auto *const root = static_cast<MotionNodeRuntime *>(motion.activeNodes);
     Vector3 viewRoot{};
     Matrix4x4::TransformPoint({root->transform->rows[3].x, root->transform->rows[3].y, root->transform->rows[3].z}, viewRoot);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceMotion)
+        psp::BootLog("MOTION: after root transform read");
+#endif
     const float blend = std::sqrt((viewRoot.y * viewRoot.y + viewRoot.x * viewRoot.x) + viewRoot.z * viewRoot.z) >= 10.0f ?
         std::max(0.0f, motion.handRotationBlend - 0.050000001f) :
         std::min(motion.handRotationBlend + 0.050000001f, g_maxHandRotationBlend);
@@ -1063,6 +1119,10 @@ std::int32_t mainMotionUpdate(MotionInformationWork &motion) {
     }
     if (g_vfPlayerAggroCombat)
         SelectMotionSoundCommand(motion, previousTime, previousFrameTimer);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceMotion)
+        psp::BootLog("MOTION: after sound command");
+#endif
     motion.rootAngleFlags &= ~0x800U;
     return static_cast<std::int8_t>(motion.poseEvaluationSucceeded);
 }

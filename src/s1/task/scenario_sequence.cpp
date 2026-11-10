@@ -1,3 +1,6 @@
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
 #include "s1/task/scen.hpp"
 #include "s1/task/conv.hpp"
 #include "logging.hpp"
@@ -880,9 +883,33 @@ void SEQ_ParseFrame(ScenarioSequence *sequence) {
 void SEQ_Cleanup() {
     if (!g_pCVWK)
         return;
+#if defined(SHENMUE_HOST_PSP)
+    {
+        static std::int32_t traced = 0;
+        if (traced < 4) {
+            ++traced;
+            std::int32_t withCallback = 0;
+            for (const CVWKRuntimeSlot &slot : g_pCVWK->slots) {
+                if (slot.callback)
+                    ++withCallback;
+            }
+            psp::BootLog("SEQ_Cleanup: cvwk=%p slots=%u withCallback=%d", static_cast<void *>(g_pCVWK),
+                         static_cast<unsigned>(std::size(g_pCVWK->slots)), static_cast<int>(withCallback));
+        }
+    }
+#endif
     for (CVWKRuntimeSlot &slot : g_pCVWK->slots) {
         if (slot.callback)
             slot.callback(&slot);
     }
+#if defined(SHENMUE_HOST_PSP)
+    {
+        static std::int32_t tracedDone = 0;
+        if (tracedDone < 4) {
+            ++tracedDone;
+            psp::BootLog("SEQ_Cleanup: callbacks returned");
+        }
+    }
+#endif
 }
 } // namespace shenmue::s1

@@ -24,6 +24,7 @@
 #include "s1/input.hpp"
 #include "s1/launch_options.hpp"
 #include "s1/legacy_renderer.hpp"
+#include "s1/nuklear_integration.hpp"
 #include "s1/scene_memory.hpp"
 #include "s1/texture_cache.hpp"
 #include "s1/window.hpp"
@@ -394,6 +395,11 @@ std::int64_t InitShenmue(GameConfig *config) {
     config->display.flags = 0;
     g_originalScreenWidth = 480;
     g_originalScreenHeight = 272;
+    // The UI layout space is the PC 1920x1080 canvas; the Windows shader path
+    // sets these in d3t::InitNuklearTexture2D, which PSP skips. Leaving them 0
+    // divides by a zero buffer in AdjustScreenForAspectRatio (NaN viewport).
+    g_uiScreenWidth = 1920;
+    g_uiScreenHeight = 1080;
 #else
     static_cast<void>(config);
 #endif

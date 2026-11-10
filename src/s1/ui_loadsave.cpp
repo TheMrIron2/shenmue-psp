@@ -1,3 +1,7 @@
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
+
 #if defined(SHENMUE_STEAM)
 #include "d3t/steam.hpp"
 #endif
@@ -182,9 +186,17 @@ void UpdateInGameStatus() {
     if (inGame == g_isInGame)
         return;
     g_isInGame = inGame;
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("UpdateInGameStatus: inGame=%d", inGame);
+#endif
     for (UIBaseRuntime &element : g_uiElements) {
-        if ((!element.setup || element.config.init == 3) && element.getContentPanel)
+        if ((!element.setup || element.config.init == 3) && element.getContentPanel) {
+#if defined(SHENMUE_HOST_PSP)
+            psp::BootLog("UpdateInGameStatus: index=%d handle=%d", static_cast<int>(&element - g_uiElements.data()),
+                         static_cast<int>(element.config.uiHandleIndex));
+#endif
             element.getContentPanel();
+        }
     }
 }
 } // namespace shenmue::s1
@@ -454,8 +466,10 @@ std::int64_t LoadSave_IsSelected() {
     cellTemplate.layoutEnd = 12;
     cellTemplate.labelFirst = 0;
     cellTemplate.labelEnd = 7;
-    g_frontendEmblemImages[static_cast<std::size_t>(g_frontendEmblemImageCount++)] = g_loadSaveColourImages[1];
-    g_frontendEmblemImages[static_cast<std::size_t>(g_frontendEmblemImageCount++)] = g_loadSaveColourImages[4];
+    for (UIColourImageWidget *const image : {g_loadSaveColourImages[1], g_loadSaveColourImages[4]}) {
+        if (g_frontendEmblemImageCount >= 0 && static_cast<std::size_t>(g_frontendEmblemImageCount) < g_frontendEmblemImages.size())
+            g_frontendEmblemImages[static_cast<std::size_t>(g_frontendEmblemImageCount++)] = image;
+    }
     return 1;
 }
 

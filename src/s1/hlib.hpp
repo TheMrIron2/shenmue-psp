@@ -166,6 +166,8 @@ void HLib_Init();
 std::uint64_t HLib_Malloc();
 std::int64_t HLib_CanAllocate64ByteBlock(std::int32_t blockCount);
 std::uint64_t HLib_GetLargestMallocFreeBlock();
+// PSP diagnostics: free bytes (and largest free block) in the main HLib arena.
+std::uint64_t HLib_GetArenaFreeBytes(std::uint64_t *largestFreeBlock);
 void HLib_FreeUseSpaces();
 void *UpdateTaskData_0();
 void *HLib_AllocHeapMemBlock(std::int64_t size, std::int32_t token);

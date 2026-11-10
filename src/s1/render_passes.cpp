@@ -1,3 +1,6 @@
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
 #include "s1/render_passes.hpp"
 #include "s1/boot.hpp"
 
@@ -36,6 +39,11 @@
 #endif
 
 namespace shenmue::s1 {
+
+#if defined(SHENMUE_HOST_PSP)
+extern std::int32_t g_pspTraceFrame;
+#endif
+
 
 D3TDeviceContext *g_RenderDeviceContext = nullptr;
 std::int32_t g_numberOfPolys = 0;
@@ -1208,13 +1216,33 @@ UIViewport AdjustScreenForAspectRatio(std::int32_t mode) {
     const std::int32_t bufferWidth = static_cast<std::int32_t>(g_uiScreenWidth);
     const std::int32_t originalWidth = static_cast<std::int32_t>(g_originalScreenWidth);
     const std::int32_t screenWidth = originalWidth > bufferWidth ? bufferWidth : originalWidth;
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("AdjustScreen: enter mode=%d buffer=%d original=%d screen=%d", mode, bufferWidth, originalWidth, screenWidth);
+#endif
     float adjustment = 0.0f;
     if (mode == 1) {
         const float buffer = static_cast<float>(bufferWidth);
         const float screenHeight = static_cast<float>(static_cast<std::int32_t>(g_originalScreenHeight));
         const float scale = (1.0f / (1080.0f / buffer)) * (screenHeight / static_cast<float>(screenWidth));
+#if defined(SHENMUE_HOST_PSP)
+        {
+            std::uint32_t bits = 0;
+            std::memcpy(&bits, &scale, sizeof(bits));
+            if (g_pspTraceFrame < 3) psp::BootLog("AdjustScreen: scale=%08x", bits);
+        }
+#endif
         adjustment = static_cast<float>(static_cast<std::uint32_t>(static_cast<std::int64_t>(buffer / scale))) - 1439.964f;
+#if defined(SHENMUE_HOST_PSP)
+        {
+            std::uint32_t bits = 0;
+            std::memcpy(&bits, &adjustment, sizeof(bits));
+            if (g_pspTraceFrame < 3) psp::BootLog("AdjustScreen: adjustment=%08x", bits);
+        }
+#endif
     }
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("AdjustScreen: done");
+#endif
     return {.rect = {.x = adjustment * 0.5f, .y = 0.0f, .z = static_cast<float>(bufferWidth) - adjustment, .w = 1080.0f}, .depthRange = {.x = 0.0f, .y = 1.0f}};
 }
 

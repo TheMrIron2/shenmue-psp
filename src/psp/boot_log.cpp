@@ -26,6 +26,14 @@ void writeLine(const char *path, const char *line, std::size_t length) {
 
 } // namespace
 
+namespace {
+void truncateLog(const char *path) {
+    const SceUID file = sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+    if (file >= 0)
+        sceIoClose(file);
+}
+} // namespace
+
 void InitBootLog(int argc, char **argv) {
     std::memcpy(g_logPath, kRelativeLogPath, sizeof(kRelativeLogPath));
     if (argc <= 0 || !argv || !argv[0] || !argv[0][0]) {
@@ -49,6 +57,12 @@ void InitBootLog(int argc, char **argv) {
     }
     std::memcpy(g_logPath, argv[0], directoryLength);
     std::memcpy(g_logPath + directoryLength, kLogName, sizeof(kLogName));
+}
+
+void ResetBootLog() {
+    truncateLog(g_logPath);
+    if (std::strcmp(g_logPath, kFallbackLogPath) != 0)
+        truncateLog(kFallbackLogPath);
 }
 
 void BootLog(const char *format, ...) {

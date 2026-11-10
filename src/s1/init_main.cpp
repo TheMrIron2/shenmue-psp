@@ -108,7 +108,10 @@ void *copyColdStorageBlock(const std::byte *base, std::int32_t selector, std::si
 #endif
     if (!destination) {
 #if defined(SHENMUE_HOST_PSP)
-        psp::BootLog("InitMain: cold block allocation failed token=%08x size=%d", static_cast<unsigned>(token), signedSize);
+        std::uint64_t largestArenaBlock = 0;
+        const std::uint64_t arenaFree = HLib_GetArenaFreeBytes(&largestArenaBlock);
+        psp::BootLog("InitMain: cold block allocation failed token=%08x size=%d arenaFree=%uKB arenaMax=%uKB", static_cast<unsigned>(token),
+                     signedSize, static_cast<unsigned>(arenaFree / 1024), static_cast<unsigned>(largestArenaBlock / 1024));
 #endif
         return nullptr;
     }

@@ -64,6 +64,11 @@ std::array<SystemModuleEntry, 22> SystemModules{{
 }};
 
 HLib::Task *g_pModuleTask = nullptr;
+#if defined(SHENMUE_HOST_PSP)
+// Armed by MapControlTask_Init so the task trace covers the map module's first
+// frames without logging the whole boot.
+bool g_pspTraceTasks = false;
+#endif
 std::int32_t g_isRenderSuppressed = 0;
 
 std::int32_t g_perspectiveProjection = 1;
@@ -209,6 +214,9 @@ int Shenmue_Main(int argc, char **argv) {
 #endif
     HLib::Task *task = CurrentTask;
     std::uint32_t bootIterations = 0;
+#if defined(SHENMUE_HOST_PSP)
+    std::int32_t tracedTaskCallbacks = 0;
+#endif
     for (;;) {
 #if defined(SHENMUE_HOST_PSP)
         if (bootIterations < 16) {
@@ -223,7 +231,13 @@ int Shenmue_Main(int argc, char **argv) {
             return -2;
         }
 #if defined(SHENMUE_HOST_PSP)
-        const bool traceCallback = bootIterations <= 40;
+        bool traceCallback = bootIterations <= 40;
+#if defined(SHENMUE_HOST_PSP)
+        if (g_pspTraceTasks && tracedTaskCallbacks < 120) {
+            traceCallback = true;
+            ++tracedTaskCallbacks;
+        }
+#endif
         if (traceCallback) {
             psp::BootLog("task callback: begin iteration=%u task=%p index=%d token=%08x next=%p", bootIterations,
                          static_cast<void *>(task), task->taskIndex, static_cast<unsigned>(task->taskToken),

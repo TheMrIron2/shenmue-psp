@@ -49,13 +49,22 @@ std::uint32_t HLib_GetTaskDataOffset(const void *pointer) {
 
 namespace {
 
-// The PC build reserves a 64 MB HLib arena plus an 18 MB malloc arena. Those
-// sizes are far beyond the PSP's memory budget, so the PSP target uses an
-// 16 MB arena for the 64 MB bring-up build. Cold storage, startup font and
-// motion data, retained title textures, and the main-menu sprite set must stay
-// live together while the original boot sequence enters the menu.
+// The PC build reserves a 64 MB HLib arena plus an 18 MB malloc arena, far
+// beyond the PSP's memory budget.
+//
+// Sizing the PSP arena is a compromise between InitMain and the rest of the
+// boot. InitMain is the peak: at 8 MB the 351270-byte FONT and the 173392-byte
+// FMOT cold blocks both failed to allocate, and FACE_Init then dereferenced a
+// null g_FMOT. The idle title screen, by contrast, reports ~6 MB free even with
+// a smaller arena, because the OP02 handoff releases a 6.1 MB block.
+//
+// So the arena is allocated best-fit: request kArenaSize and step down 1 MB at a
+// time to kArenaMinSize, keeping the largest contiguous block the heap will
+// give. HLib_GetArenaFreeBytes() reports how much of it is ever live, and the
+// chosen size is in the "HLib_Init: arena=" boot log line.
 #if defined(SHENMUE_HOST_PSP)
-constexpr std::size_t kArenaSize = 0x1000000;      // 16 MB
+constexpr std::size_t kArenaSize = 0xc00000;      // 12 MB, stepped down to...
+constexpr std::size_t kArenaMinSize = 0x800000;   // ...8 MB, the least InitMain survives
 constexpr std::size_t kMallocArenaSize = 0x100000; // 1 MB
 #else
 constexpr std::size_t kArenaSize = 0x4000000;
@@ -157,6 +166,16 @@ void HLib_Init() {
     }
 
     if (!g_arena) {
+#if defined(SHENMUE_HOST_PSP)
+        // Best fit, in 1 MB steps. A coarse ladder (10 -> 7.5 MB) skipped past 8 MB
+        // and lost InitMain's peak headroom, and how much contiguous memory the
+        // heap yields varies with the build.
+        for (std::size_t candidate = kArenaSize; candidate >= kArenaMinSize && !g_arena; candidate -= 0x100000U) {
+            g_arena = static_cast<std::byte *>(::operator new(candidate, std::align_val_t{32}, std::nothrow));
+            if (g_arena)
+                g_arenaSize = candidate;
+        }
+#else
         for (const std::size_t candidate : {kArenaSize, kArenaSize * 3 / 4, kArenaSize / 2, kArenaSize / 4}) {
             g_arena = static_cast<std::byte *>(::operator new(candidate, std::align_val_t{32}, std::nothrow));
             if (g_arena) {
@@ -164,6 +183,7 @@ void HLib_Init() {
                 break;
             }
         }
+#endif
         if (!g_arena) {
             std::fprintf(stderr, "HLib_Init: failed to allocate arena\n");
 #if defined(SHENMUE_HOST_PSP)
@@ -211,6 +231,30 @@ std::uint64_t HLib_GetLargestMallocFreeBlock() {
     }
 
     return largestFreePayload;
+}
+
+// Free payload currently available in the main HLib arena, plus the largest
+// single free block. Used by the PSP boot log to right-size kArenaSize.
+std::uint64_t HLib_GetArenaFreeBytes(std::uint64_t *largestFreeBlock) {
+    std::uint64_t totalFreePayload = 0;
+    std::uint64_t largestFreePayload = 0;
+    for (HLib::TaskData *block = g_pFirstTaskData; block;) {
+        const auto payloadAddress = reinterpret_cast<std::uintptr_t>(block + 1);
+        if (g_arena && (payloadAddress & 0x1f) != 0)
+            break;
+        if (block->status != HLIB_USED_TOKEN.name || block->taskToken == 0) {
+            const std::uint64_t payloadSize = static_cast<std::uint64_t>(block->content_size) - 0x40;
+            totalFreePayload += payloadSize;
+            if (largestFreePayload < payloadSize)
+                largestFreePayload = payloadSize;
+        }
+        if (!block->next_ptr || block->next_ptr == g_pLastTaskData)
+            break;
+        block = block->next_ptr;
+    }
+    if (largestFreeBlock)
+        *largestFreeBlock = largestFreePayload;
+    return totalFreePayload;
 }
 
 std::int64_t HLib_CanAllocate64ByteBlock(std::int32_t blockCount) {

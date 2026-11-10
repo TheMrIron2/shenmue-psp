@@ -1,3 +1,7 @@
+#if defined(SHENMUE_HOST_PSP)
+#include <pspthreadman.h>
+#include "psp/boot_log.hpp"
+#endif
 #include "auto_test.hpp"
 #include "s1/ui_internal.hpp"
 #ifdef _DEBUG
@@ -1493,6 +1497,8 @@ std::int32_t g_uiHelpNewOnly = 0;
 
 namespace shenmue::s1 {
 
+std::int32_t g_pspTraceFrame = 0;
+
 std::array<std::uint32_t, 3> g_uiRefreshedElements{};
 
 std::array<std::uint32_t, 3> g_uiPreviousRefreshedElements{};
@@ -1592,24 +1598,50 @@ std::int32_t g_uiSafeAreaWidth = -1;
 
 
 void UI_BeginFrame() {
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("UI_BeginFrame: enter suppressed=%d stack=%d", g_isRenderSuppressed ? 1 : 0, sceKernelGetThreadStackFreeSize(0));
+#endif
     const std::int32_t mode = !g_isRenderSuppressed && (!g_currentSettings.display.aspectRatio || g_seqActive) ? 1 : 0;
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("UI_BeginFrame: mode=%d uiScreen=%u original=%u/%u", mode, static_cast<unsigned>(g_uiScreenWidth),
+                 static_cast<unsigned>(g_originalScreenWidth), static_cast<unsigned>(g_originalScreenHeight));
+#endif
     const UIViewport viewport = AdjustScreenForAspectRatio(mode);
+#if defined(SHENMUE_HOST_PSP)
+    {
+        std::uint32_t bits[4] = {};
+        std::memcpy(bits, &viewport, sizeof(bits));
+        if (g_pspTraceFrame < 3) psp::BootLog("UI_BeginFrame: viewport bits=%08x %08x %08x %08x", bits[0], bits[1], bits[2], bits[3]);
+    }
+#endif
     g_currentUIViewportRect = viewport.rect;
     g_currentUIViewportDepth = viewport.depthRange;
     for (std::size_t word = 0; word < g_uiRefreshedElements.size(); ++word) {
         g_uiPreviousRefreshedElements[word] = g_uiRefreshedElements[word];
         g_uiRefreshedElements[word] = 0;
     }
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("UI_BeginFrame: refresh words done");
+#endif
     const std::int32_t safeHeight = static_cast<std::int32_t>(UI_SafeAreaScale() * 1080.0f);
     const std::int32_t aspectWidth = UI_GetAspectWidth();
     const std::int32_t safeWidth = static_cast<std::int32_t>(static_cast<float>(aspectWidth) - (1080.0f - static_cast<float>(g_uiSafeAreaHeight)));
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("UI_BeginFrame: safe area h=%d w=%d aspect=%d", safeHeight, safeWidth, aspectWidth);
+#endif
     if (safeHeight != g_uiSafeAreaHeight || safeWidth != g_uiSafeAreaWidth) {
         g_uiSafeAreaWidth = safeWidth;
         g_uiSafeAreaHeight = safeHeight;
         g_informationBarLabels.message.noOutline = 1;
         for (d3t::UIWindow &window : g_uiWindows)
             window.rectCached = 0;
+#if defined(SHENMUE_HOST_PSP)
+        if (g_pspTraceFrame < 3) psp::BootLog("UI_BeginFrame: window rect cache cleared");
+#endif
     }
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("UI_BeginFrame: done");
+#endif
 }
 
 
@@ -1617,13 +1649,31 @@ void UI_BeginFrame() {
 std::int32_t g_uiDebugRevealAspectBars = 0;
 
 void DrawNuklear() {
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("DrawNuklear: begin initialized=%d tag=%s %s", g_NuklearInitialized ? 1 : 0, __DATE__, __TIME__);
+#endif
     if (!g_NuklearInitialized) {
         SetupNuklear();
     }
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("DrawNuklear: setup done");
+#endif
     FontLoader();
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("DrawNuklear: fonts done");
+#endif
     UI_BeginFrame();
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("DrawNuklear: UI_BeginFrame done");
+#endif
     UpdateFrontendEmblemRotation();
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("DrawNuklear: emblem rotation done");
+#endif
     UpdateInGameStatus();
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("DrawNuklear: in-game status done");
+#endif
     g_uiPreviousInputElements = g_uiRegisteredCallbackRequests;
     g_uiRegisteredCallbackRequests.fill(0);
 #if defined(_WIN32)
@@ -1653,6 +1703,9 @@ void DrawNuklear() {
         }
     }
     g_uiElements[kUiNotebookPages].isActive = 1;
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("DrawNuklear: element loop done");
+#endif
 
     nk_clear(&GNuklearWindow);
 #if SHEN_AUTO_TEST_ENABLED
@@ -1665,6 +1718,9 @@ void DrawNuklear() {
     const std::uint32_t uiRenderTarget = g_nuklearTexture;
     const bool canRender = BeginNuklearFrame(g_RenderDeviceContext, uiRenderTarget);
     bool drewUI = false;
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("DrawNuklear: begin frame canRender=%d target=%08x", canRender ? 1 : 0, static_cast<unsigned>(uiRenderTarget));
+#endif
 
 
 
@@ -1684,6 +1740,9 @@ void DrawNuklear() {
     RefreshAll(0, kUiHelpNew);
     Nuklear_BindRenderTarget();
     NuklearUpdateForAspectRatio(g_bIs43AspectRatio);
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("DrawNuklear: first refresh done");
+#endif
     if (g_RenderDeviceContext && g_NuklearInitialized) {
         const UIViewport column = AdjustScreenForAspectRatio(g_bIs43AspectRatio);
         if (g_bIs43AspectRatio)
@@ -1694,6 +1753,9 @@ void DrawNuklear() {
     g_currentUIViewportDepth = secondRange.depthRange;
     RefreshAll(kUiHelpNew, 80);
     NuklearUpdateForAspectRatio(g_bIs43AspectRatio);
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("DrawNuklear: second refresh done");
+#endif
     if (std::exchange(g_screenFadeWindowBegun, false) && canRender && g_rendererWhiteTexture) {
         const float scale = static_cast<float>(g_uiScreenHeight) / 1080.0f;
         const NuklearQuad fade{
@@ -1719,6 +1781,9 @@ void DrawNuklear() {
     if (canRender) {
         CompositeNuklearFrame(g_RenderDeviceContext, uiRenderTarget);
     }
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("DrawNuklear: composite done");
+#endif
     const UIViewport restored = AdjustScreenForAspectRatio(frameViewportMode());
     g_currentUIViewportRect = restored.rect;
     g_currentUIViewportDepth = restored.depthRange;
@@ -1729,6 +1794,10 @@ void DrawNuklear() {
     }
     for (UIBaseRuntime &element : g_uiElements)
         element.isActive = 0;
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("DrawNuklear: done");
+    ++g_pspTraceFrame;
+#endif
 }
 
 

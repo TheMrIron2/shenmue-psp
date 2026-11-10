@@ -66,6 +66,11 @@
 
 namespace shenmue::s1 {
 
+#if defined(SHENMUE_HOST_PSP)
+extern std::int32_t g_pspTraceFrame;
+#endif
+
+
 using UpdateTimerFunction = void (*)();
 using RenderPipelineFunction = void (*)(void *, void *);
 
@@ -637,10 +642,19 @@ void FinishSceneFrameSubmission() {
     }
 #endif
     ManageFramePacing();
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("FinishSceneFrameSubmission: pacing done");
+#endif
 
     if (g_pfnDrawNuklear)
         g_pfnDrawNuklear();
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("FinishSceneFrameSubmission: nuklear done");
+#endif
     Do_contrast_Pass();
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("FinishSceneFrameSubmission: contrast done");
+#endif
 #if defined(_WIN32)
     if (g_pfnDrawNuklear && g_RenderDeviceContext) {
         DX11::WaitForCommandListFinish(g_RenderDeviceContext);

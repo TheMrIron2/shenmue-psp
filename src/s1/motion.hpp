@@ -267,7 +267,13 @@ struct MotionSampleClock {
 
 
 struct MotionRigNode {
-    std::uint8_t nodeId;
+    // This struct sits inside the file's `#pragma pack(push, 1)` region. The
+    // rigs are static constexpr data, but MotionNodeRuntime keeps pointers into
+    // them (bindPosition/bindEulerSource), so their members must stay naturally
+    // aligned: an 8-bit nodeId put `position` at offset 1 and gave every node an
+    // odd address, which faults on MIPS word loads. A 32-bit id plus tail
+    // padding keeps position at offset 4 and the stride a multiple of 4.
+    std::uint32_t nodeId;
     Vector3 position;
     std::int16_t euler[3];
     std::uint8_t children[4];
@@ -278,6 +284,7 @@ struct MotionRigNode {
     std::uint8_t keyframeSlots;
     std::uint8_t positionMode;
     std::uint8_t nodeKind;
+    std::uint8_t reservedPadding[3];
 };
 
 struct MotionRigType {
@@ -304,6 +311,10 @@ static_assert(sizeof(MotionSequenceWork) == 0x2c);
 static_assert(offsetof(MotionSequenceWork, targetPosition) == 0x04);
 static_assert(offsetof(MotionSequenceWork, playbackRate) == 0x28);
 static_assert(offsetof(MotionNodeRuntime, bindEuler) == 0x0a);
+// bindPosition/bindEulerSource point into the static rigs, so every rig node's
+// position must stay naturally aligned and the array stride must preserve it.
+static_assert(offsetof(MotionRigNode, position) % alignof(Vector3) == 0);
+static_assert(sizeof(MotionRigNode) % alignof(Vector3) == 0);
 static_assert(offsetof(MotionNodeRuntime, translationKeys) == 0x20);
 static_assert(offsetof(MotionNodeRuntime, transform) == 0x68);
 

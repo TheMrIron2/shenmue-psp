@@ -1,3 +1,5 @@
+#include <malloc.h>
+#include <pspthreadman.h>
 #include "auto_test.hpp"
 
 #include <cmath>
@@ -50,6 +52,12 @@ void RenderPspFrontendFrame();
 #endif
 
 namespace shenmue::s1 {
+
+#if defined(SHENMUE_HOST_PSP)
+extern std::int32_t g_pspTraceFrame;
+extern double dblFrameTime;
+#endif
+
 
 BookkeepingCache g_bookkeepingStatsCache{};
 std::int32_t g_returnToTitleRequested = 0;
@@ -649,6 +657,23 @@ void HLib_mainModule(HLib::TaskData *) {
         HLib_UpdateTaskQueue(SystemModule::Audio);
     }
     IncrementRootFrameCopy();
+#if defined(SHENMUE_HOST_PSP)
+    // Cheap heartbeat: one line per 60 frames keeps the memstick quiet enough
+    // for the loop to run at speed.
+    {
+        static std::int32_t heartbeat = 0;
+        if (++heartbeat >= 60) {
+            heartbeat = 0;
+            std::uint64_t largestArenaBlock = 0;
+            const std::uint64_t arenaFree = HLib_GetArenaFreeBytes(&largestArenaBlock);
+            const struct mallinfo heap = mallinfo();
+            psp::BootLog("frame: %d last=%.2fms stack=%d clear=%08x heap=%uKB arenaFree=%uKB arenaMax=%uKB", static_cast<int>(g_pspTraceFrame),
+                         dblFrameTime, sceKernelGetThreadStackFreeSize(0), static_cast<unsigned>(g_ClearColour),
+                         static_cast<unsigned>(heap.fordblks / 1024), static_cast<unsigned>(arenaFree / 1024),
+                         static_cast<unsigned>(largestArenaBlock / 1024));
+        }
+    }
+#endif
 }
 
 } // namespace shenmue::s1

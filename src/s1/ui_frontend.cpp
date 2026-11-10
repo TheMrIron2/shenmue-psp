@@ -33,6 +33,11 @@ void PlayMainMenuAcceptSound();
 }
 
 namespace shenmue::s1 {
+
+#if defined(SHENMUE_HOST_PSP)
+extern std::int32_t g_pspTraceFrame;
+#endif
+
 std::int32_t ConfirmChanges();
 }
 
@@ -1178,8 +1183,16 @@ std::int64_t MainMenuWheelDestroy() {
 
 // @verified - p
 void UpdateFrontendEmblemRotation() {
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) {
+        psp::BootLog("emblem: enter inGame=%d slot=%d count=%d", g_isInGame, g_frontendEmblemAnimSlot, g_frontendEmblemImageCount);
+        psp::BootLog("emblem: img0=%p img1=%p img2=%p img3=%p", static_cast<void *>(g_frontendEmblemImages[0]),
+                     static_cast<void *>(g_frontendEmblemImages[1]), static_cast<void *>(g_frontendEmblemImages[2]),
+                     static_cast<void *>(g_frontendEmblemImages[3]));
+    }
+#endif
 #if SHEN_AUTO_TEST_ENABLED
-    for (std::int32_t index = 0; index < g_frontendEmblemImageCount; ++index) {
+    for (std::int32_t index = 0; index < g_frontendEmblemImageCount && static_cast<std::size_t>(index) < g_frontendEmblemImages.size(); ++index) {
         if (g_frontendEmblemImages[static_cast<std::size_t>(index)])
             g_frontendEmblemImages[static_cast<std::size_t>(index)]->angle = 0.0f;
     }
@@ -1188,7 +1201,7 @@ void UpdateFrontendEmblemRotation() {
         if (g_frontendEmblemAnimSlot != -1) {
             UI_ReleaseAnimSlot(g_frontendEmblemAnimSlot);
             g_frontendEmblemAnimSlot = -1;
-            for (std::int32_t index = 0; index < g_frontendEmblemImageCount; ++index) {
+            for (std::int32_t index = 0; index < g_frontendEmblemImageCount && static_cast<std::size_t>(index) < g_frontendEmblemImages.size(); ++index) {
                 if (g_frontendEmblemImages[static_cast<std::size_t>(index)])
                     g_frontendEmblemImages[static_cast<std::size_t>(index)]->angle = 0.0f;
             }
@@ -1196,7 +1209,24 @@ void UpdateFrontendEmblemRotation() {
     } else if (g_isInGame == 0) {
         if (g_frontendEmblemAnimSlot == -1) {
             g_frontendEmblemAnimSlot = UIAnimAllocSlot();
+#if defined(SHENMUE_HOST_PSP)
+            psp::BootLog("UpdateFrontendEmblemRotation: alloc slot=%d", g_frontendEmblemAnimSlot);
+#endif
+            // UIAnimAllocSlot returns -1 when the table is exhausted; indexing
+            // with it would write far outside g_uiAnimSlots.
+            if (g_frontendEmblemAnimSlot < 0 || static_cast<std::size_t>(g_frontendEmblemAnimSlot) >= g_uiAnimSlots.size()) {
+#if defined(SHENMUE_HOST_PSP)
+                psp::BootLog("emblem: no free anim slot");
+#endif
+                return;
+            }
             g_uiAnimSlots[static_cast<std::size_t>(g_frontendEmblemAnimSlot)].loopMode = 1;
+        }
+        if (g_frontendEmblemAnimSlot < 0 || static_cast<std::size_t>(g_frontendEmblemAnimSlot) >= g_uiAnimSlots.size()) {
+#if defined(SHENMUE_HOST_PSP)
+            psp::BootLog("emblem: invalid slot %d", g_frontendEmblemAnimSlot);
+#endif
+            return;
         }
         UIAnimSlot &slot = g_uiAnimSlots[static_cast<std::size_t>(g_frontendEmblemAnimSlot)];
         if (slot.status == 0 && g_frontendEmblemAnimSlot != -1) {
@@ -1211,13 +1241,24 @@ void UpdateFrontendEmblemRotation() {
             slot.elapsed = 0.0f;
             slot.reserved40 = -1;
         }
-        for (std::int32_t index = 0; index < g_frontendEmblemImageCount; ++index) {
+        for (std::int32_t index = 0; index < g_frontendEmblemImageCount && static_cast<std::size_t>(index) < g_frontendEmblemImages.size(); ++index) {
             if (g_frontendEmblemImages[static_cast<std::size_t>(index)])
                 g_frontendEmblemImages[static_cast<std::size_t>(index)]->angle = slot.current[0];
         }
     }
 #endif
+#if defined(SHENMUE_HOST_PSP)
+    if (g_pspTraceFrame < 3) psp::BootLog("emblem: done");
+#endif
 }
+namespace {
+void appendFrontendEmblemImage(UIColourImageWidget *image) {
+    if (g_frontendEmblemImageCount < 0 || static_cast<std::size_t>(g_frontendEmblemImageCount) >= g_frontendEmblemImages.size())
+        return;
+    g_frontendEmblemImages[static_cast<std::size_t>(g_frontendEmblemImageCount++)] = image;
+}
+} // namespace
+
 std::int64_t MainMenuSelected() {
     g_mainMenuPulseSlot = UIAnimAllocSlot();
     g_mainMenuContentPanel = UI_FindWindowById("MainMenu::ContentPanel");
@@ -1239,8 +1280,8 @@ std::int64_t MainMenuSelected() {
         if (g_mainMenuFrontImages[image])
             g_mainMenuFrontImageAlphas[image] = static_cast<std::uint8_t>(g_mainMenuFrontImages[image]->colour >> 24U);
     }
-    g_frontendEmblemImages[static_cast<std::size_t>(g_frontendEmblemImageCount++)] =
-        UI_ColourImageRecord(UI_FindViewColourImage(slot, "Main_Menu::Emblem_Panel::Emblem_Image"));
+    appendFrontendEmblemImage(
+        UI_ColourImageRecord(UI_FindViewColourImage(slot, "Main_Menu::Emblem_Panel::Emblem_Image")));
     g_mainMenuUserIdLabel = UI_LabelRecord(UI_FindViewLabel(slot, "USER_ID"));
     g_mainMenuUserIdText[0] = 0;
     if (g_mainMenuUserIdLabel)
@@ -1502,7 +1543,7 @@ std::int64_t PressStartSelected() {
     PressStart_SelectLogo();
     if (g_pressStartIntroActive)
         PressStart_StartIntro();
-    g_frontendEmblemImages[static_cast<std::size_t>(g_frontendEmblemImageCount++)] = g_pressStartEmblemImage;
+    appendFrontendEmblemImage(g_pressStartEmblemImage);
     return 1;
 #endif
 }
@@ -3657,7 +3698,7 @@ std::int64_t OptionsMenu_IsSelected() {
     rowTemplate.layoutEnd = 47;
     rowTemplate.labelEnd = 9;
     for (const std::size_t index : {13U, 4U, 5U, 6U, 7U, 16U, 26U, 36U, 42U})
-        g_frontendEmblemImages[static_cast<std::size_t>(g_frontendEmblemImageCount++)] = g_optionsColourImages[index];
+        appendFrontendEmblemImage(g_optionsColourImages[index]);
     return 1;
 }
 

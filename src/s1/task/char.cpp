@@ -1,3 +1,6 @@
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
 #include "s1/task/char.hpp"
 #include "s1/task/char_components_internal.hpp"
 #include "s1/task/conv.hpp"
@@ -2327,6 +2330,14 @@ void MOTM_Callback(Character *character, void *payload) {
     if (!character || !manager)
         return;
     g_motnCubicScratch = nullptr;
+#if defined(SHENMUE_HOST_PSP)
+    static std::int32_t tracedMotm = 0;
+    const bool traceMotm = tracedMotm < 4;
+    if (traceMotm) {
+        ++tracedMotm;
+        psp::BootLog("MOTM: enter character=%p model=%p", static_cast<void *>(character), static_cast<void *>(character->model));
+    }
+#endif
     if (const MapControlData *const control = g_mapControlTask ? reinterpret_cast<MapControlData *>(g_mapControlTask->task_data_ptr) : nullptr) {
         SCEN_PromoteCharacterIndexNode(control->scenarioTask, character);
         const ScenarioTaskData *const scenario = control->scenarioTask ? reinterpret_cast<ScenarioTaskData *>(control->scenarioTask->task_data_ptr) : nullptr;
@@ -2339,25 +2350,53 @@ void MOTM_Callback(Character *character, void *payload) {
         std::memcpy(g_currentCharacterName, &characterId, sizeof(characterId));
         g_currentCharacterName[4] = 0;
     }
+#if defined(SHENMUE_HOST_PSP)
+    if (traceMotm)
+        psp::BootLog("MOTM: after scenario promote");
+#endif
     const Vector3 previousRootWorld = manager->motion.rootWorldPosition;
     const Vector3 previousWorldPosition = GetPositionForEntity(character->entity.node);
     ManageMotionAnimations(character);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceMotm)
+        psp::BootLog("MOTM: after ManageMotionAnimations");
+#endif
     manager->motion.rootPreTranslate = GetPositionForEntity(character->entity.node);
     manager->motion.entityEuler = GetEulerAnglesForEntity(character->entity.node);
     RefreshExternalMotionTransform(*manager);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceMotm)
+        psp::BootLog("MOTM: after RefreshExternalMotionTransform");
+#endif
     if (character->model) {
         manager->motion.basePoseTemplateIndex = getIMGM(character);
+#if defined(SHENMUE_HOST_PSP)
+        if (traceMotm)
+            psp::BootLog("MOTM: after getIMGM index=%d", static_cast<int>(manager->motion.basePoseTemplateIndex));
+#endif
 
         manager->motion.frameContactOverlay = reinterpret_cast<std::uintptr_t>(hmdlCycleDataForNode(character->model));
+#if defined(SHENMUE_HOST_PSP)
+        if (traceMotm)
+            psp::BootLog("MOTM: after hmdlCycleDataForNode overlay=%08x", static_cast<unsigned>(manager->motion.frameContactOverlay));
+#endif
         g_motnClipAngle = character->clipAngle;
         g_pMotion = &manager->motion;
         g_motnBasePoseOnly = 0;
         const std::uint32_t imageName = IMGM_GetImageName(character);
+#if defined(SHENMUE_HOST_PSP)
+        if (traceMotm)
+            psp::BootLog("MOTM: after IMGM_GetImageName image=%08x", static_cast<unsigned>(imageName));
+#endif
         g_motnIsRyo = imageName == IMAGE_YKA_M.name || imageName == IMAGE_YKB_M.name || imageName == IMAGE_YKC_M.name || imageName == IMAGE_YKD_M.name ||
                 imageName == IMAGE_YKE_M.name || imageName == IMAGE_YKF_M.name ?
             1U :
             0U;
         NPCLogger(character, 5, mainMotionUpdate(manager->motion));
+#if defined(SHENMUE_HOST_PSP)
+    if (traceMotm)
+        psp::BootLog("MOTM: after mainMotionUpdate");
+#endif
     } else {
         const bool wasVisible = (character->motionFlags & 0x10U) != 0;
         character->motionFlags &= static_cast<std::uint8_t>(~0x10U);
@@ -2365,6 +2404,10 @@ void MOTM_Callback(Character *character, void *payload) {
             CHAR_LogNPCVisibility(character, false);
     }
     FIGP_Related(character, &manager->motion);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceMotm)
+        psp::BootLog("MOTM: after FIGP_Related");
+#endif
     if (const std::uint8_t *const cue = shenLookupAnimationIndex(manager->motion.currentAnimId, 20)) {
         const std::int32_t value0 = static_cast<std::int8_t>(cue[1]);
         const std::int32_t value1 = static_cast<std::int8_t>(cue[2]);
@@ -2376,6 +2419,10 @@ void MOTM_Callback(Character *character, void *payload) {
     }
     std::fill(std::begin(manager->motion.localTargets), std::end(manager->motion.localTargets), nullptr);
     std::fill(std::begin(manager->motion.worldTargets), std::end(manager->motion.worldTargets), nullptr);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceMotm)
+        psp::BootLog("MOTM: after cue/targets reset");
+#endif
     if ((manager->flags & 1U) != 0) {
         Vector3 delta = manager->motion.rootMotionDelta;
         if (manager->motion.interpolationMode == 7 || manager->motion.interpolationMode == 11) {
@@ -3557,7 +3604,23 @@ void HLTaskFunc_CharacterHandler_Callback(HLib::TaskData *taskData) {
     if (!character || character->entity.name != kCharacterEntityName)
         return;
     if ((character->flags.value & 0x24u) == CharacterFlagVisible) {
+#if defined(SHENMUE_HOST_PSP)
+        static std::int32_t tracedCharacters = 0;
+        const bool traceCharacter = tracedCharacters < 4;
+        if (traceCharacter) {
+            ++tracedCharacters;
+            psp::BootLog("CHAR task: character=%p flags=%08x", static_cast<void *>(character), static_cast<unsigned>(character->flags.value));
+        }
+        std::int32_t componentIndex = 0;
+#endif
         for (CharacterComponentNode *component = character->componentList; component; component = component->next) {
+#if defined(SHENMUE_HOST_PSP)
+            if (traceCharacter)
+                psp::BootLog("CHAR task: component=%d node=%p flags=%08x update=%p", static_cast<int>(componentIndex),
+                             static_cast<void *>(component), static_cast<unsigned>(component->flags),
+                             reinterpret_cast<void *>(component->updateCallback));
+            ++componentIndex;
+#endif
             if ((component->flags & 1u) && component->updateCallback) {
                 component->updateCallback(character, component + 1);
             }

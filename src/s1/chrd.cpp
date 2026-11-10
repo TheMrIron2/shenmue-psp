@@ -302,9 +302,34 @@ class ModelReadBatch {
 #endif
                     if (model) {
                         Shenmue_FileRead_ALL(reinterpret_cast<std::int64_t>(model->model), path, 0, 0x22);
+#if defined(SHENMUE_HOST_PSP)
+                        if (traceModel)
+                            psp::BootLog("CHRD: file read returned image=%s modelData=%p", request.filename,
+                                         static_cast<void *>(model->model));
+#endif
+                        // A failed read (out of memory) leaves model->model null;
+                        // dereferencing it would fault instead of skipping.
+                        if (!model->model) {
+#if defined(SHENMUE_HOST_PSP)
+                            psp::BootLog("CHRD: raw model read failed image=%s path=%s", request.filename, path);
+                            psp::BootLogHeap("CHRD raw model read failure");
+#endif
+                            HLib_FreeTaskData(static_cast<HLib::TaskData *>(request.bytes), 0);
+                            ReadFile_0(0, &request.file->handle);
+                            request.file = nullptr;
+                            continue;
+                        }
                         const auto kind = static_cast<std::int16_t>(static_cast<Mt5RuntimeNode *>(model->model)->nodeKind);
                         model->field_14 = kind > 28672 ? kind - 28673 : 0;
+#if defined(SHENMUE_HOST_PSP)
+                        if (traceModel)
+                            psp::BootLog("CHRD: publish begin image=%s kind=%d", request.filename, static_cast<int>(kind));
+#endif
                         MDLM_PublishImage(request.destination, model, true);
+#if defined(SHENMUE_HOST_PSP)
+                        if (traceModel)
+                            psp::BootLog("CHRD: publish complete image=%s", request.filename);
+#endif
                     } else {
                         HLib_FreeTaskData(static_cast<HLib::TaskData *>(request.bytes), 0);
                     }

@@ -1,3 +1,6 @@
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
 #include "s1/task/ctrl.hpp"
 #include "s1/steam.hpp"
 #include "s1/chrd.hpp"
@@ -75,6 +78,11 @@
 #include <cstring>
 
 namespace shenmue::s1 {
+
+#if defined(SHENMUE_HOST_PSP)
+extern bool g_pspTraceTasks;
+#endif
+
 extern HLib::Task *g_effeTask;
 extern bool g_effectQueueReplayedCommandStream;
 extern std::array<std::uint32_t, 5> g_saveDataRelated;
@@ -876,6 +884,9 @@ void HLTaskFunc_EnqueueMapControlTask(HLib::TaskData *) {
     control->padCaptureEntry = BindMapControlPADCEntry();
     control->windTask = WIND_Init();
     FOG_InitFog();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("CTRL_Init: after FOG");
+#endif
     g_defaultLightRadius = 10.0f;
     g_defaultLightMask = 7;
     g_shadowModelCacheCount = 0;
@@ -896,25 +907,43 @@ void HLTaskFunc_EnqueueMapControlTask(HLib::TaskData *) {
         std::memcpy(const_cast<std::byte *>(end) + 4, &terminalOffset, sizeof(terminalOffset));
     }
 
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("CTRL_Init: after mapinfo end chunk");
+#endif
     SAVE_Init(0);
     SOND_Init();
     std::uint32_t payloadSize = 0;
     const std::byte *const sndd = MAPINFO_FindChunkPayload(SHEN_NAME(SNDD), &payloadSize);
     SNDD_Parse(reinterpret_cast<HLib::TaskData *>(const_cast<std::byte *>(sndd ? sndd - 8 : nullptr)));
 
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("CTRL_Init: after SAVE/SOND/SNDD");
+#endif
     SCEN_ResetTimedTransitions();
     control->mapEventTask = HLib_EnqueueTaskWithoutParameter(MapEventTask_Callback, 3, 2, kMapEventTaskToken);
     control->scenarioTask = SCEN_Init();
     control->modelLoaderTask = MDLM_Init();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("CTRL_Init: after SCEN_Init");
+#endif
     control->cameraTask = CAME_Init();
     control->filmTask = FILM_Init(11);
     control->mbstTask = MBST_Init();
     UI_GUITasksEnqueue();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("CTRL_Init: after MBST/UI");
+#endif
     WRN_CtrlWarning_Enqueue();
     if (!DISP_IsOnMainMenu())
         RenderLoadingScreen(0);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("CTRL_Init: after RenderLoadingScreen");
+#endif
     g_maxHandRotationBlend = 0.5f;
     MOTN_ResetMapFileRegistrations();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("CTRL_Init: after MOTN reset");
+#endif
     g_invalidatedMotionRange = nullptr;
     g_vfPlayerAggroCombat = 1;
 
@@ -929,21 +958,42 @@ void HLTaskFunc_EnqueueMapControlTask(HLib::TaskData *) {
         std::memcpy(&control->mapRuntimeFlags, mapState, sizeof(control->mapRuntimeFlags));
     }
     const bool snowParticleBudgetEnabled = InitializeMapEnvironmentParameters();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("CTRL_Init: after env params snow=%d", snowParticleBudgetEnabled ? 1 : 0);
+#endif
     FACE_Init();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("CTRL_Init: after FACE_Init");
+#endif
     LGHT_Initialize(control->mapInfo, g_mapInfoSize);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("CTRL_Init: after LGHT_Initialize");
+#endif
     InitializeMapShadowParameters();
     EFFE_ResetScriptLightParametersForMap();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("CTRL_Init: after shadow/effect lights");
+#endif
     if (!DISP_IsOnMainMenu())
         EnqueueTIME();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("CTRL_Init: after EnqueueTIME");
+#endif
     HLib_EnqueueTaskWithoutParameter(WIND_Callback, 8, 2, SHEN_NAME(WIND));
     LCDM_Init();
     SRCH_Init();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("CTRL_Init: after WIND enqueue");
+#endif
 
     payloadSize = 0;
     const std::byte *const collision = MAPINFO_FindChunkPayload(SHEN_NAME(COLS), &payloadSize);
     COLS_Process(collision ? const_cast<std::byte *>(collision - 8) : nullptr);
     MAPINFO_InitializeSceneParameters(control->mapInfo);
 
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("CTRL_Init: after COLS");
+#endif
     LoadSceneMapAssets();
     g_skipNavRegionFiltering = 0;
     g_navRegionListHead = nullptr;
@@ -958,6 +1008,9 @@ void HLTaskFunc_EnqueueMapControlTask(HLib::TaskData *) {
     g_locomotionInitState = LocomotionInit::Pending;
     CHRD_InitCurrentMapInfo();
     EFFE_Init();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("CTRL_Init: after LoadSceneMapAssets");
+#endif
     g_flmwPlayerDriveActive = 0;
     g_flmwForwardInputPressed = 0;
     g_defaultHpRegenProfile = 0;
@@ -966,6 +1019,9 @@ void HLTaskFunc_EnqueueMapControlTask(HLib::TaskData *) {
     g_vfRuntimeAccumFightTicks = 0;
     EFFE_SetSnowParticleBudgetEnabled(snowParticleBudgetEnabled);
     SCN3_Process(control->mapInfo);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("CTRL_Init: after CHRD/EFFE");
+#endif
     control->sceneId = g_sceneId;
     control->areaId = g_areaId;
     control->entryPoint = g_entryPoint;
@@ -976,15 +1032,24 @@ void HLTaskFunc_EnqueueMapControlTask(HLib::TaskData *) {
 
     control->objectTask = OBJE_Init();
     control->scrollTask = EnqueueScrollTaskOwner();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("CTRL_Init: after SCN3_Process");
+#endif
     control->clipTask = HLib_EnqueueTaskWithoutParameter(CLIP_Callback, 12, 2, SHEN_NAME(CLIP));
     Rendering_n_Init();
     control->renderTask = DRWP_GetWork();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("CTRL_Init: after OBJE/scroll");
+#endif
     control->dwmzTask = DWMZ_Init();
     TRWV_Init();
     if (!DISP_IsOnMainMenu())
         CDTT_Init();
     CSTC_Init();
     MOTF_Init();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("CTRL_Init: after Rendering_n_Init");
+#endif
 }
 
 void MapControlTask_Init(HLib::TaskData *) {
@@ -1001,13 +1066,29 @@ void MapControlTask_Init(HLib::TaskData *) {
     for (FileState &file : g_files)
         ReadFile_0(areaStatsProfile.areaId, &file.handle);
     HLTaskFunc_InternalInit();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("MapControlTask_Init: internal init returned");
+#endif
 
     HLTaskFunc_EnqueueMapControlTask(nullptr);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("MapControlTask_Init: map control task enqueued");
+#endif
     krepEnqueue(0);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("MapControlTask_Init: krep 0 enqueued");
+#endif
     krepEnqueue(3);
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("MapControlTask_Init: krep 3 enqueued");
+#endif
     g_ctrlInitialized = true;
     g_moduleFrameCount = 0;
     (void)PACK_HasValidPack();
+#if defined(SHENMUE_HOST_PSP)
+    psp::BootLog("MapControlTask_Init: complete");
+    g_pspTraceTasks = true;
+#endif
 
     HLib::Task *const moduleTask = CurrentTask;
     if (moduleTask) {

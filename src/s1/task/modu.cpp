@@ -1,3 +1,6 @@
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
 #include "s1/task/modu.hpp"
 #include "s1/boot.hpp"
 #include "s1/frame_pipeline.hpp"
@@ -101,6 +104,23 @@ void MODU_Callback(HLib::TaskData *) {
     UpdateModuleInputBookkeeping();
 
     const auto *const control = reinterpret_cast<const MapControlData *>(g_mapControlTask ? g_mapControlTask->task_data_ptr : nullptr);
+#if defined(SHENMUE_HOST_PSP)
+    {
+        static bool tracedModu = false;
+        if (!tracedModu) {
+            tracedModu = true;
+            psp::BootLog("MODU_Callback: first frame control=%p", static_cast<const void *>(control));
+        }
+    }
+#endif
+    if (!control) {
+        // The flags read below used to be the first dereference, so a missing
+        // map control block crashed instead of skipping the module switch.
+#if defined(SHENMUE_HOST_PSP)
+        psp::BootLog("MODU_Callback: no map control block");
+#endif
+        return;
+    }
     if ((control->flags & 1U) != 0) {
         g_sceneId = control->sceneId;
         g_areaId = control->areaId;

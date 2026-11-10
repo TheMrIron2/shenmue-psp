@@ -22,6 +22,7 @@ PSP_HEAP_SIZE_KB(-2048);
 
 extern "C" int main(int argc, char **argv) {
     shenmue::psp::InitBootLog(argc, argv);
+    shenmue::psp::ResetBootLog();
     shenmue::psp::BootLog("entry: build=%s %s", __DATE__, __TIME__);
     shenmue::psp::BootLog("entry: argv0=%s", argc > 0 && argv && argv[0] ? argv[0] : "<missing>");
     // The recovered input pipeline polls the active controller once per game

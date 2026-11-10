@@ -1,3 +1,6 @@
+#if defined(SHENMUE_HOST_PSP)
+#include "psp/boot_log.hpp"
+#endif
 #include "s1/motion_internal.hpp"
 
 namespace shenmue::s1::motion_detail {
@@ -3444,20 +3447,66 @@ void AdvancePreviousClock(MotionInformationWork &motion, bool resetMode, float d
 
 // MOTN_EvaluateActiveMotion: interpolation mode 0 (active pose only).
 bool MOTN_EvaluateActiveMotion(MotionInformationWork &motion) {
+#if defined(SHENMUE_HOST_PSP)
+    static std::int32_t tracedActive = 0;
+    const bool traceActive = tracedActive < 2;
+    if (traceActive) {
+        ++tracedActive;
+        psp::BootLog("EVAL: enter anim=%04x pending=%04x data=%p nodes=%p basePose=%d", static_cast<unsigned>(motion.currentAnimId),
+                     static_cast<unsigned>(motion.pendingAnimId), static_cast<const void *>(MOTN_GetDataForAnimId(motion.currentAnimId)),
+                     static_cast<void *>(motion.activeNodes), static_cast<int>(motion.basePoseTemplateIndex));
+    }
+#endif
     PublishActiveClock(motion);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceActive)
+        psp::BootLog("EVAL: clock published");
+#endif
     if (!StorePoseEvaluation(motion, ApplyActiveNodes(motion)))
         return false;
+#if defined(SHENMUE_HOST_PSP)
+    if (traceActive)
+        psp::BootLog("EVAL: active nodes applied");
+#endif
     auto *const activeMotionNodes = static_cast<MotionNodeRuntime *>(motion.activeNodes);
     MOTN_AlignNodesToTrackedNode(motion, activeMotionNodes);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceActive)
+        psp::BootLog("EVAL: nodes aligned");
+#endif
     ApplyNodeConstraintPasses(motion);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceActive)
+        psp::BootLog("EVAL: constraints applied");
+#endif
     RunMotionCallbacks(motion);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceActive)
+        psp::BootLog("EVAL: callbacks done");
+#endif
     ApplyArmTargetsAndLengthClamp_MOTN(nullptr, static_cast<MotionNodeRuntime *>(motion.activeNodes));
+#if defined(SHENMUE_HOST_PSP)
+    if (traceActive)
+        psp::BootLog("EVAL: arm targets done");
+#endif
     if (motion.secondaryAnimId || motion.updateMode)
         MOTN_ApplyBoneHierarchyTransform(*static_cast<MotionNodeRuntime *>(motion.activeNodes), *static_cast<MotionNodeRuntime *>(motion.activeNodes));
     else
         MOTN_ApplyRigProgram(motion.basePoseTemplateIndex, static_cast<MotionNodeRuntime *>(motion.activeNodes));
+#if defined(SHENMUE_HOST_PSP)
+    if (traceActive)
+        psp::BootLog("EVAL: rig program applied secondary=%d mode=%d", motion.secondaryAnimId ? 1 : 0, static_cast<int>(motion.updateMode));
+#endif
     MOTN_SetNewMatrices(nullptr);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceActive)
+        psp::BootLog("EVAL: matrices set");
+#endif
     AdvanceActiveClock(motion, motion.playbackRate);
+#if defined(SHENMUE_HOST_PSP)
+    if (traceActive)
+        psp::BootLog("EVAL: done");
+#endif
     return true;
 }
 
