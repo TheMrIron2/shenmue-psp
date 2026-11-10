@@ -139,12 +139,13 @@ std::int32_t LoadTEXN(void *texnData, bool retainPspPixels, std::uint16_t maxPsp
     auto *const texn = static_cast<TexnData *>(texnData);
 #if defined(SHENMUE_HOST_PSP)
     const bool traceTexture = g_textureAllocationNumber < 64;
+    const bool reportTextureFailure = traceTexture || retainPspPixels;
     if (traceTexture)
         psp::BootLog("LoadTEXN: begin data=%p", texnData);
 #endif
     if (texn->magic != kTexnMagic) {
 #if defined(SHENMUE_HOST_PSP)
-        if (traceTexture)
+        if (reportTextureFailure)
             psp::BootLog("LoadTEXN: invalid TEXN magic=%08x", static_cast<unsigned>(texn->magic));
 #endif
         return -1;
@@ -228,7 +229,7 @@ std::int32_t LoadTEXN(void *texnData, bool retainPspPixels, std::uint16_t maxPsp
 #endif
     if (decodedSize <= 0 || blockCount <= 0 || elementCount <= 0) {
 #if defined(SHENMUE_HOST_PSP)
-        if (traceTexture)
+        if (reportTextureFailure)
             psp::BootLog("LoadTEXN: invalid decoded size");
 #endif
         return -1;
@@ -241,19 +242,19 @@ std::int32_t LoadTEXN(void *texnData, bool retainPspPixels, std::uint16_t maxPsp
 
 #if defined(SHENMUE_HOST_PSP)
     if (static_cast<std::size_t>(decodedSize) > g_pvrDecodeScratch.size()) {
-        if (traceTexture)
+        if (reportTextureFailure)
             psp::BootLog("LoadTEXN: decode request exceeds PSP scratch bytes=%d capacity=%u", decodedSize,
                          static_cast<unsigned>(g_pvrDecodeScratch.size()));
         return -1;
     }
     if (!InitTextureLoader()) {
-        if (traceTexture)
+        if (reportTextureFailure)
             psp::BootLog("LoadTEXN: PVR decode semaphore unavailable");
         return -1;
     }
     const std::int32_t waitResult = sceKernelWaitSema(g_pvrDecodeSemaphore, 1, nullptr);
     if (waitResult < 0) {
-        if (traceTexture)
+        if (reportTextureFailure)
             psp::BootLog("LoadTEXN: PVR decode semaphore wait failed result=%d", waitResult);
         return -1;
     }
@@ -308,7 +309,7 @@ std::int32_t LoadTEXN(void *texnData, bool retainPspPixels, std::uint16_t maxPsp
         std::free(decoded);
 #endif
 #if defined(SHENMUE_HOST_PSP)
-        if (traceTexture) {
+        if (reportTextureFailure) {
             std::uint64_t largestArenaBlock = 0;
             const std::uint64_t arenaFree = HLib_GetArenaFreeBytes(&largestArenaBlock);
             psp::BootLog("LoadTEXN: pixel allocation failed bytes=%u arenaFree=%uKB arenaMax=%uKB", static_cast<unsigned>(allocationBytes),
@@ -370,7 +371,7 @@ std::int32_t LoadTEXN(void *texnData, bool retainPspPixels, std::uint16_t maxPsp
 #endif
     if (surface < 0) {
 #if defined(SHENMUE_HOST_PSP)
-        if (traceTexture)
+        if (reportTextureFailure)
             psp::BootLog("LoadTEXN: no PVR surface available");
 #endif
         releasePixels(pixels);
@@ -383,7 +384,7 @@ std::int32_t LoadTEXN(void *texnData, bool retainPspPixels, std::uint16_t maxPsp
 #endif
     if (uploadResult == -1) {
 #if defined(SHENMUE_HOST_PSP)
-        if (traceTexture)
+        if (reportTextureFailure)
             psp::BootLog("LoadTEXN: releasing failed upload surface=%d", surface);
 #endif
         PVR_FreeAllocatedSurfaceByIndex(surface);

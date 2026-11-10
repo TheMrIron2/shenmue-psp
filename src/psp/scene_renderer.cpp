@@ -69,6 +69,8 @@ void RenderQueuedScene() {
     sceKernelDcacheWritebackRange(g_vertices.data(), g_vertexCount * sizeof(Vertex));
     sceGuEnable(GU_DEPTH_TEST);
     sceGuDepthFunc(GU_GEQUAL);
+    // Preserve the visible portions of triangles crossing the near plane.
+    sceGuEnable(GU_CLIP_PLANES);
     sceGuDisable(GU_CULL_FACE);
     sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
     sceGuTexFilter(GU_LINEAR, GU_LINEAR);
@@ -112,6 +114,7 @@ void RenderQueuedScene() {
     if (g_loggedFrames++ < 8)
         BootLog("GU scene: draws=%u vertices=%u", g_drawCount, g_vertexCount);
     sceGuDisable(GU_DEPTH_TEST);
+    sceGuDisable(GU_CLIP_PLANES);
     sceGuDisable(GU_ALPHA_TEST);
     sceGuDisable(GU_BLEND);
     sceGuDisable(GU_TEXTURE_2D);

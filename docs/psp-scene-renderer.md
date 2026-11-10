@@ -2,6 +2,12 @@
 
 The USA idle boot path now reaches original MT5 character submission and native GU textured triangles. This is a first geometry milestone, not a completed attract sequence. The rendered Ryo body is a base-map player placeholder which the original script hides. The actual OP02 intro features the bird and Shenhua; see [the recovered intro trace](original-intro-scene.md).
 
+## Hardware progress
+
+On PSP hardware, the original scenario now reaches OP02's SHDR environment and TAK02 hawk. Packed TEXN pixels are retained in swizzled 16-bit GU formats, with a 128-pixel dimension cap for the scene arena. The cap and nearest-neighbor reduction are temporary quality compromises; the scene still lacks its original sky, lighting and fog.
+
+The GU scene pass enables near-plane clipping. In comparable early OP02 captures, the previous configuration showed blue wedges through the terrain, while the clipped configuration showed a continuous terrain band. Each comparison used eight screen captures, covering about three distinct displayed frames; the camera was not synchronized to an identical frame. Longer hardware observation is still needed to rule out remaining depth or geometry issues. The tested scene ran at roughly 10–12 FPS with about 1.4 MiB free in the HLib arena.
+
 ## What runs
 
 `CharDraw_DRWP` → `Character_SubmitForDrawing` → original figure/node traversal → `DrawSceneObjectFromCommandStream` → original material/strip parser → `psp::QueueSceneTriangles`.
@@ -34,9 +40,9 @@ build/dc-menu-audit/frontend_test PAL/DISC1/extracted/1ST_READ.BIN USA/DISC1/ext
 
 The scene check covers vertex attributes, colour/opacity, reversed-depth conversion, matrix alignment and queue limits. The frontend regression passes.
 
-## Next dependency: the original scenario
+## Earlier dependency: the original scenario
 
-`SCN3_Process` currently calls `SCEN_LoadCurrentMapScript`, which requests the PC file `scenario/act01_OP02.scn`. The Dreamcast disc instead embeds native SH-4 SCN3 inside MAPINFO. Therefore the current rendered body is not evidence that the original OP02 scenario executes. Do not add a replacement sequence, camera, or completion timer.
+At the time of the PPSSPP capture above, `SCN3_Process` called `SCEN_LoadCurrentMapScript` for the PC file `scenario/act01_OP02.scn`. The Dreamcast disc instead embeds native SH-4 SCN3 inside MAPINFO, so that body did not establish that the original OP02 scenario was executing. Do not add a replacement sequence, camera, or completion timer.
 
 The repository's existing `tools/scn3` lifter successfully converts the USA chunk to the existing VM representation. Verified commands with the handoff's prepared tool:
 

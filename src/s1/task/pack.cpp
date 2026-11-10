@@ -834,7 +834,12 @@ std::int32_t AllocatePAKT(PackTaskData *pack, PackSlot *slot) {
         if (PackCallbackBudgetExceeded(startTime, pack->callbackBudget)) {
             break;
         }
+#if defined(SHENMUE_HOST_PSP)
+        // The GU reads retained pixels from RAM; limit their size for the scene arena.
+        slot->textureIds[textureIndex++] = LoadTEXN(texture, true, 128, PspTextureStorage::Swizzled16);
+#else
         slot->textureIds[textureIndex++] = LoadTEXN(texture);
+#endif
         texture = reinterpret_cast<PakChunkHeader *>(reinterpret_cast<std::byte *>(texture) + texture->size);
     }
 
